@@ -435,14 +435,6 @@ const handler = createMemoryMcpHandler({ memory });
 storage: { backend: "sqlite", path: ".marvmem/memory.sqlite" }
 ```
 
-### JSON fallback
-
-适合 demo 或特别轻的接入：
-
-```ts
-storage: { backend: "json", path: ".marvmem/memory.json" }
-```
-
 ### InMemoryStore
 
 适合：

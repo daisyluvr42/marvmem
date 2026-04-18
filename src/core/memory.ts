@@ -7,7 +7,7 @@ import { TaskContextManager } from "../task/manager.js";
 import { InMemoryTaskContextStore, SqliteTaskContextStore } from "../task/store.js";
 import type { MemoryInferencer, MemoryStorageBackend } from "../system/types.js";
 import { cosineSimilarity, embedTextHash } from "./hash-embedding.js";
-import { FileMemoryStore, InMemoryStore, SqliteMemoryStore } from "./storage.js";
+import { InMemoryStore, SqliteMemoryStore } from "./storage.js";
 import {
   normalizeScope,
   scopeKey,
@@ -352,9 +352,6 @@ function createDefaultStore(backend: MemoryStorageBackend, storagePath: string):
   if (backend === "memory") {
     return new InMemoryStore();
   }
-  if (backend === "json") {
-    return new FileMemoryStore(storagePath.endsWith(".json") ? storagePath : `${storagePath}.json`);
-  }
   return new SqliteMemoryStore(deriveSqlitePath(storagePath));
 }
 
@@ -365,18 +362,12 @@ function resolveStorageBackend(options: MarvMemOptions): MemoryStorageBackend {
   if (options.store instanceof InMemoryStore) {
     return "memory";
   }
-  if (options.store instanceof FileMemoryStore) {
-    return "json";
-  }
   return "sqlite";
 }
 
 function deriveSqlitePath(storagePath: string): string {
   if (storagePath.endsWith(".sqlite") || storagePath.endsWith(".db")) {
     return storagePath;
-  }
-  if (storagePath.endsWith(".json")) {
-    return storagePath.replace(/\.json$/u, ".sqlite");
   }
   return storagePath.includes(".") ? storagePath : `${storagePath}.sqlite`;
 }

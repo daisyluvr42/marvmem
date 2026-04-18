@@ -31,7 +31,6 @@ That gives you a system that is easier to retrieve from, easier to inject into p
 ## Highlights
 
 - SQLite-backed storage by default
-- JSON fallback store for simple deployments
 - In-memory store for tests and ephemeral sessions
 - Scope-aware memory records
 - Active memory split into `context` and `experience`
@@ -107,7 +106,6 @@ flowchart TB
 
   subgraph Storage["Storage"]
     Sqlite["SQLite default store"]
-    Json["JSON fallback store"]
     MemoryStore["In-memory store"]
   end
 
@@ -134,7 +132,6 @@ flowchart TB
   Active --> Sqlite
   Task --> Sqlite
 
-  Palace --> Json
   Palace --> MemoryStore
   Active --> MemoryStore
   Task --> MemoryStore
@@ -410,17 +407,8 @@ Default:
 
 Optional:
 
-- JSON file storage
 - in-memory storage
 - custom `MemoryStore`
-
-Example JSON fallback:
-
-```ts
-const memory = createMarvMem({
-  storage: { backend: "json", path: ".marvmem/memory.json" },
-});
-```
 
 Example in-memory:
 

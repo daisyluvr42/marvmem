@@ -1,6 +1,6 @@
 import type { MemoryScope } from "../core/types.js";
 
-export type MemoryStorageBackend = "sqlite" | "json" | "memory";
+export type MemoryStorageBackend = "sqlite" | "memory";
 export type MemoryRetrievalBackend = "builtin" | "qmd";
 
 export type MemoryInferencerKind =
