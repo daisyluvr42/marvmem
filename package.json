@@ -2,7 +2,7 @@
   "name": "marvmem",
   "version": "0.1.0",
   "private": true,
-  "description": "Standalone long-term memory core extracted from Marv for use by other agents",
+  "description": "Layered memory subsystem with palace, active memory, task context, retrieval, and maintenance flows",
   "type": "module",
   "repository": {
     "type": "git",
@@ -12,6 +12,14 @@
   "bugs": {
     "url": "https://github.com/daisyluvr42/marvmem/issues"
   },
+  "keywords": [
+    "memory",
+    "agent",
+    "rag",
+    "retrieval",
+    "mcp",
+    "sqlite"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

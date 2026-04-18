@@ -1,5 +1,7 @@
 # MarvMem
 
+[![CI](https://github.com/daisyluvr42/marvmem/actions/workflows/ci.yml/badge.svg)](https://github.com/daisyluvr42/marvmem/actions/workflows/ci.yml)
+
 MarvMem is a standalone layered memory subsystem extracted from Marv and rebuilt for other agents.
 
 It is not just a long-term memory table. It combines:
