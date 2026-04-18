@@ -279,7 +279,82 @@ await runtime.captureReflection({
 });
 ```
 
-## 9. retrieval 怎么选
+## 9. adapter 怎么接
+
+如果你已经有自己的 agent loop，不想自己手拼 recall/capture，可以直接接 adapter。
+
+### 方案 A：逐轮 wrapper
+
+适合：
+
+- 你想保留最完整的自动 capture 行为
+- 可以接受每轮都做 active context / task summary 压缩
+
+```ts
+import { createGenericMemoryAdapter } from "marvmem/adapters";
+
+const adapter = createGenericMemoryAdapter({
+  memory,
+  defaultScopes: [{ type: "agent", id: "support-bot" }],
+});
+
+const promptContext = await adapter.beforePrompt({
+  userMessage: "What should I do next?",
+});
+
+await adapter.afterTurn({
+  userMessage: "Remember that I prefer concise Chinese replies.",
+  assistantMessage: "I will keep replies concise and in Chinese.",
+});
+```
+
+### 方案 B：session-flush wrapper
+
+适合：
+
+- 你接的是 Codex、Claude Code 这类 tool-heavy agent
+- 你希望 recall 每轮可用
+- 但不希望每轮都做 active/task summary
+
+```ts
+import { createSessionMemoryAdapter } from "marvmem/adapters";
+
+const adapter = createSessionMemoryAdapter({
+  memory,
+  defaultScopes: [{ type: "session", id: "codex-run-001" }],
+});
+
+const promptContext = await adapter.beforePrompt({
+  userMessage: "What should I do next?",
+  taskId: "release",
+});
+
+await adapter.afterTurn({
+  userMessage: "We still need the release checklist.",
+  assistantMessage: "I will keep it concise and actionable.",
+  taskId: "release",
+  taskTitle: "Release checklist",
+});
+
+await adapter.flushSession();
+```
+
+这个 wrapper 的默认行为是：
+
+- 每轮只做轻量写入
+- recall 仍然每轮可用
+- active context 和 task summary 延后到 `flushSession()` 时统一生成
+
+### 怎么选
+
+- 想要最省心、自动化最完整
+  用逐轮 wrapper
+- 想把 token 压力降下来，且宿主知道什么时候 session 结束
+  用 session-flush wrapper
+- 想暴露给外部 client / 多 agent 工具调用
+  用 MCP
+
+## 10. retrieval 怎么选
 
 ### 方案 A：只用 builtin
 
@@ -297,6 +372,11 @@ await runtime.captureReflection({
 
 - 想保留本地 recall
 - 但需要更强的语义 rerank
+
+注意：
+
+- 默认不会因为环境变量存在就自动开启 remote embeddings
+- 只有显式配置 `retrieval.embeddings` 时才会启用这条路径
 
 支持：
 
@@ -351,7 +431,7 @@ const memory = createMarvMem({
 });
 ```
 
-## 10. maintenance 怎么接
+## 11. maintenance 怎么接
 
 这一层是 MarvMem 很重要的特点之一，不只是“存完就不管”。
 
@@ -387,7 +467,7 @@ await memory.maintenance.rebuildExperience({
 });
 ```
 
-## 11. MCP 怎么接
+## 12. MCP 怎么接
 
 如果你要暴露给外部 agent 或 MCP client，用：
 
@@ -425,7 +505,7 @@ const handler = createMemoryMcpHandler({ memory });
 - “操作 task context”
   用 `memory_task_*`
 
-## 12. 存储怎么选
+## 13. 存储怎么选
 
 ### 默认：SQLite
 
@@ -451,7 +531,7 @@ const memory = createMarvMem({
 });
 ```
 
-## 13. 怎么选推荐接法
+## 14. 怎么选推荐接法
 
 如果你只要一个可用的分层记忆系统，我建议：
 
@@ -459,8 +539,10 @@ const memory = createMarvMem({
   `createMarvMem()` + `createMemoryRuntime()`
 - 需要对外暴露工具
   再加 `createMemoryMcpHandler()`
-- 已经有固定 agent 框架
-  直接包 adapter
+- 已经有固定 agent 框架，且宿主能决定 session 结束
+  优先用 `createSessionMemoryAdapter()`
+- 已经有固定 agent 框架，但想全自动逐轮 capture
+  用 `createGenericMemoryAdapter()`
 
 如果你只想先试 palace：
 
@@ -470,10 +552,11 @@ const memory = createMarvMem({
 
 - 一定要把 `active memory + task context + maintenance` 一起接进去
 
-## 14. 当前边界
+## 15. 当前边界
 
 - palace 这一层对外还是简单的 `MemoryStore` 读写接口，不是完整 SQL CRUD API
 - builtin retrieval 仍然从本地确定性分数出发，remote embeddings 是可选 rerank
 - 开启 QMD backend 时，运行环境里需要已有 `qmd` CLI
 - runtime 抽取规则是轻量启发式
+- session-flush wrapper 的 buffer 只存在 adapter 进程内，由宿主决定何时 flush
 - adapter 层刻意保持很薄，不做重封装

@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createSessionMemoryAdapter } from "../src/adapters/index.js";
 import { createMarvMem, InMemoryStore } from "../src/core/index.js";
-import { RetrievalManager } from "../src/retrieval/index.js";
+import { createEmbeddingProvider, RetrievalManager } from "../src/retrieval/index.js";
 import { createMemoryRuntime } from "../src/runtime/index.js";
 
 test("runtime combines active memory and task context layers", async () => {
@@ -83,12 +84,30 @@ test("retrieval manager can rerank builtin hits with an embedding provider", asy
     },
   });
 
+  assert.equal(retrieval.usesRemoteEmbeddings, true);
+
   const reranked = await retrieval.search("totally unrelated query", {
     scopes: [{ type: "user", id: "alice" }],
     maxResults: 2,
     minScore: 0,
   });
   assert.equal(reranked[0]?.record?.content, "Beta oranges only.");
+});
+
+test("remote embeddings stay disabled by default even when API keys exist", async () => {
+  const previous = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+
+  try {
+    const provider = await createEmbeddingProvider();
+    assert.equal(provider, null);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previous;
+    }
+  }
 });
 
 test("experience calibration removes stale entries that are not supported by palace memory", async () => {
@@ -118,4 +137,50 @@ test("experience calibration removes stale entries that are not supported by pal
   assert.deepEqual(calibration.zombieRemoved, ["Stale unused habit."]);
   assert.ok(experience);
   assert.doesNotMatch(experience!.content, /Stale unused habit/);
+});
+
+test("session memory adapter defers active context distillation until flush", async () => {
+  const memory = createMarvMem({
+    store: new InMemoryStore(),
+    inferencer: async ({ kind, prompt }) => ({
+      ok: true,
+      text:
+        kind === "context"
+          ? `Context summary: ${prompt.slice(0, 80)}`
+          : kind === "task_summary"
+            ? `Task summary: ${prompt.slice(0, 80)}`
+            : `Summary: ${prompt.slice(0, 80)}`,
+    }),
+  });
+  const scope = { type: "session" as const, id: "codex-run" };
+  const adapter = createSessionMemoryAdapter({
+    memory,
+    defaultScopes: [scope],
+  });
+
+  await adapter.afterTurn({
+    taskId: "release",
+    taskTitle: "Release checklist",
+    userMessage: "We still need the final release checklist and QA handoff.",
+    assistantMessage: "I will keep the checklist concise and actionable.",
+    toolContext: "Files changed: README.md, release.md",
+  });
+
+  const beforeFlush = await memory.active.read("context", scope);
+  assert.equal(beforeFlush, null);
+
+  const task = await memory.task.get("release");
+  assert.ok(task);
+  const entries = await memory.task.listEntries("release");
+  assert.equal(entries.length, 2);
+
+  await adapter.flushSession();
+
+  const context = await memory.active.read("context", scope);
+  assert.ok(context);
+  assert.match(context!.content, /Context summary:/);
+
+  const taskState = await memory.task.getRollingSummary("release");
+  assert.ok(taskState?.rollingSummary);
+  assert.match(taskState!.rollingSummary!, /Task summary:/);
 });

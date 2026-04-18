@@ -39,6 +39,7 @@ That gives you a system that is easier to retrieve from, easier to inject into p
 - Optional remote embedding reranking with OpenAI, Gemini, and Voyage
 - Optional QMD retrieval backend
 - Experience attribution, calibration, rebuild, and deep consolidation flows
+- Thin adapters with both per-turn capture and session-flush wrapper modes
 - MCP tools and thin adapters for agent integration
 
 ## Package Layout
@@ -201,10 +202,6 @@ const memory = createMarvMem({
     ok: true,
     text: `${kind}: ${prompt.slice(0, 200)}`,
   }),
-  retrieval: {
-    backend: "builtin",
-    embeddings: { provider: "openai" },
-  },
 });
 
 const runtime = createMemoryRuntime({
@@ -356,11 +353,55 @@ const layered = await runtime.buildRecallContext({
 });
 ```
 
+### Adapters
+
+Use adapters when you already have an agent loop and want MarvMem to sit beside it.
+
+Per-turn wrapper:
+
+```ts
+import { createGenericMemoryAdapter } from "marvmem/adapters";
+
+const adapter = createGenericMemoryAdapter({
+  memory,
+  defaultScopes: [{ type: "agent", id: "support-bot" }],
+});
+```
+
+Session-flush wrapper for tool-heavy agents like Codex or Claude Code:
+
+```ts
+import { createSessionMemoryAdapter } from "marvmem/adapters";
+
+const adapter = createSessionMemoryAdapter({
+  memory,
+  defaultScopes: [{ type: "session", id: "codex-run-001" }],
+});
+
+const promptContext = await adapter.beforePrompt({
+  userMessage: "What should I do next?",
+  taskId: "release",
+});
+
+await adapter.afterTurn({
+  userMessage: "We still need the release checklist.",
+  assistantMessage: "I will keep it concise and actionable.",
+  taskId: "release",
+  taskTitle: "Release checklist",
+});
+
+await adapter.flushSession();
+```
+
+`createGenericMemoryAdapter()` captures and distills every turn.
+`createSessionMemoryAdapter()` keeps per-turn writes lightweight and defers active-context and task-summary distillation until `flushSession()`.
+
 ## Retrieval Backends
 
 ### Builtin
 
 Builtin retrieval is always available. It starts with local weighted recall and can optionally rerank with remote embeddings.
+Remote rerank stays off by default and is only enabled when you explicitly configure `retrieval.embeddings` or inject an `embeddingProvider`.
 
 Supported embedding providers:
 
@@ -426,6 +467,7 @@ const memory = createMarvMem({
 - Builtin retrieval starts from deterministic local scoring; remote embeddings are optional rerankers
 - QMD support assumes the external CLI is already available
 - Turn capture is intentionally heuristic
+- Session-flush buffering lives in adapter memory; the host decides when to call `flushSession()`
 - Adapters stay thin and framework-friendly
 
 ## Usage Guide

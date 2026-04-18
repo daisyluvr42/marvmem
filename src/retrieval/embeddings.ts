@@ -7,6 +7,9 @@ const DEFAULT_HASH_DIMENSIONS = 128;
 export async function createEmbeddingProvider(
   config?: MemoryEmbeddingProviderConfig,
 ): Promise<MemoryEmbeddingProvider | null> {
+  if (!config) {
+    return null;
+  }
   const providerId = resolveProviderId(config);
   if (!providerId) {
     return null;

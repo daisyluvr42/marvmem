@@ -19,7 +19,7 @@ export class RetrievalManager {
 
   constructor(private readonly options: RetrievalManagerOptions) {
     this.backend = options.backend ?? "builtin";
-    this.usesRemoteEmbeddings = Boolean(options.embeddings);
+    this.usesRemoteEmbeddings = Boolean(options.embeddings || options.embeddingProvider);
     this.embeddingProviderPromise = options.embeddingProvider
       ? Promise.resolve(options.embeddingProvider)
       : createEmbeddingProvider(options.embeddings);
