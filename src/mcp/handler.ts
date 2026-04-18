@@ -214,6 +214,198 @@ export function createMemoryToolSet(params: {
         });
       },
     },
+    {
+      name: "memory_retrieve",
+      description: "Run the configured retrieval stack, including remote embeddings and optional QMD.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          query: { type: "string" },
+          scopeType: { type: "string" },
+          scopeId: { type: "string" },
+          maxResults: { type: "number" },
+          minScore: { type: "number" },
+          maxChars: { type: "number" },
+        },
+        required: ["query"],
+      },
+      execute: async (args) => {
+        const query = expectString(args.query, "query");
+        const scopes = parseScopeArgs(args, params.defaultScopes);
+        return await params.memory.retrieval.recall(query, {
+          scopes,
+          maxResults: expectNumber(args.maxResults),
+          minScore: expectNumber(args.minScore),
+          maxChars: expectNumber(args.maxChars),
+        });
+      },
+    },
+    {
+      name: "memory_active_get",
+      description: "Read active context and active experience for a scope.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          scopeType: { type: "string" },
+          scopeId: { type: "string" },
+        },
+        required: ["scopeType", "scopeId"],
+      },
+      execute: async (args) => {
+        const scope = requireScope(args);
+        return {
+          context: await params.memory.active.read("context", scope),
+          experience: await params.memory.active.read("experience", scope),
+        };
+      },
+    },
+    {
+      name: "memory_active_distill",
+      description: "Distill active context or active experience for a scope.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          kind: { type: "string" },
+          content: { type: "string" },
+          scopeType: { type: "string" },
+          scopeId: { type: "string" },
+          maxChars: { type: "number" },
+        },
+        required: ["kind", "content", "scopeType", "scopeId"],
+      },
+      execute: async (args) => {
+        const scope = requireScope(args);
+        const kind = expectString(args.kind, "kind");
+        const content = expectString(args.content, "content");
+        if (kind === "context") {
+          return {
+            document: await params.memory.active.distillContext({
+              scope,
+              sessionSummary: content,
+              maxChars: expectNumber(args.maxChars),
+            }),
+          };
+        }
+        if (kind === "experience") {
+          return {
+            document: await params.memory.active.distillExperience({
+              scope,
+              newData: content,
+              maxChars: expectNumber(args.maxChars),
+            }),
+          };
+        }
+        throw new Error("kind must be 'context' or 'experience'");
+      },
+    },
+    {
+      name: "memory_task_append",
+      description: "Append an entry into task context, creating the task when needed.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          taskId: { type: "string" },
+          title: { type: "string" },
+          role: { type: "string" },
+          content: { type: "string" },
+          scopeType: { type: "string" },
+          scopeId: { type: "string" },
+        },
+        required: ["taskId", "role", "content"],
+      },
+      execute: async (args) => {
+        const taskId = expectString(args.taskId, "taskId");
+        let task = await params.memory.task.get(taskId);
+        if (!task) {
+          const scope = parseScopeArgs(args, params.defaultScopes)?.[0];
+          if (!scope) {
+            throw new Error("scopeType and scopeId are required when creating a task");
+          }
+          task = await params.memory.task.create({
+            taskId,
+            scope,
+            title: optionalString(args.title) ?? taskId,
+          });
+        }
+        const entry = await params.memory.task.appendEntry({
+          taskId,
+          role: expectString(args.role, "role") as "user" | "assistant" | "system" | "tool",
+          content: expectString(args.content, "content"),
+        });
+        return { task, entry };
+      },
+    },
+    {
+      name: "memory_task_window",
+      description: "Build a prompt-ready task context window.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          taskId: { type: "string" },
+          message: { type: "string" },
+          toolContext: { type: "string" },
+          maxChars: { type: "number" },
+        },
+        required: ["taskId", "message"],
+      },
+      execute: async (args) => {
+        return await params.memory.task.buildWindow({
+          taskId: expectString(args.taskId, "taskId"),
+          currentQuery: expectString(args.message, "message"),
+          toolContext: optionalString(args.toolContext),
+          maxChars: expectNumber(args.maxChars),
+        });
+      },
+    },
+    {
+      name: "memory_maintenance_calibrate",
+      description: "Run experience calibration for a scope.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          scopeType: { type: "string" },
+          scopeId: { type: "string" },
+          maxChars: { type: "number" },
+        },
+        required: ["scopeType", "scopeId"],
+      },
+      execute: async (args) => {
+        return {
+          result: await params.memory.maintenance.calibrateExperience({
+            scope: requireScope(args),
+            maxChars: expectNumber(args.maxChars),
+          }),
+        };
+      },
+    },
+    {
+      name: "memory_maintenance_rebuild",
+      description: "Rebuild active experience from recent long-term memory fragments.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          scopeType: { type: "string" },
+          scopeId: { type: "string" },
+          maxChars: { type: "number" },
+        },
+        required: ["scopeType", "scopeId"],
+      },
+      execute: async (args) => {
+        return {
+          result: await params.memory.maintenance.rebuildExperience({
+            scope: requireScope(args),
+            maxChars: expectNumber(args.maxChars),
+          }),
+        };
+      },
+    },
   ];
 }
 

@@ -72,6 +72,12 @@ export type MemoryRecallResult = {
   query: string;
   hits: MemorySearchHit[];
   injectedContext: string;
+  layers?: {
+    active?: string;
+    task?: string;
+    palace?: string;
+    retrieval?: string;
+  };
 };
 
 export type MemoryListOptions = {
@@ -95,4 +101,3 @@ export function normalizeScope(scope: MemoryScope): MemoryScope {
 export function scopeKey(scope: MemoryScope): string {
   return `${scope.type}:${scope.id}`.toLowerCase();
 }
-

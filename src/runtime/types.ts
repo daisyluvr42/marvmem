@@ -1,3 +1,4 @@
+import type { TaskContextEntry } from "../task/types.js";
 import type { MemoryInput, MemoryRecallResult, MemoryRecord, MemoryScope } from "../core/types.js";
 
 export type MemoryTurnInput = {
@@ -6,6 +7,9 @@ export type MemoryTurnInput = {
   recentMessages?: string[];
   scopes?: MemoryScope[];
   maxChars?: number;
+  taskId?: string;
+  taskTitle?: string;
+  toolContext?: string;
 };
 
 export type CapturedMemoryProposal = Omit<MemoryInput, "scope"> & {
@@ -15,6 +19,7 @@ export type CapturedMemoryProposal = Omit<MemoryInput, "scope"> & {
 export type MemoryCaptureResult = {
   proposals: CapturedMemoryProposal[];
   stored: MemoryRecord[];
+  taskEntries?: TaskContextEntry[];
 };
 
 export type MemoryRuntimeOptions = {
@@ -30,6 +35,7 @@ export interface MemoryRuntime {
     scopes?: MemoryScope[];
     tags?: string[];
     metadata?: Record<string, unknown>;
+    taskId?: string;
   }): Promise<MemoryRecord | null>;
   buildSystemHint(): string;
 }

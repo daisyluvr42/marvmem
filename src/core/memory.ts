@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { ActiveMemoryManager } from "../active/manager.js";
+import { InMemoryActiveMemoryStore, SqliteActiveMemoryStore } from "../active/store.js";
+import { MaintenanceManager } from "../maintenance/manager.js";
+import { RetrievalManager } from "../retrieval/manager.js";
+import { TaskContextManager } from "../task/manager.js";
+import { InMemoryTaskContextStore, SqliteTaskContextStore } from "../task/store.js";
+import type { MemoryInferencer, MemoryStorageBackend } from "../system/types.js";
 import { cosineSimilarity, embedTextHash } from "./hash-embedding.js";
-import { FileMemoryStore } from "./storage.js";
+import { FileMemoryStore, InMemoryStore, SqliteMemoryStore } from "./storage.js";
 import {
   normalizeScope,
   scopeKey,
@@ -33,10 +40,53 @@ const DEFAULT_SEARCH_WEIGHTS: SearchWeights = {
 };
 
 export type MarvMemOptions = {
+  storage?: {
+    backend?: MemoryStorageBackend;
+    path?: string;
+  };
   storagePath?: string;
   store?: MemoryStore;
   idFactory?: () => string;
   now?: () => Date;
+  inferencer?: MemoryInferencer;
+  retrieval?: {
+    backend?: "builtin" | "qmd";
+    embeddings?: {
+      provider: "openai" | "gemini" | "voyage" | "script" | "auto";
+      model?: string;
+      dimensions?: number;
+      fallback?: "openai" | "gemini" | "voyage" | "script" | "none";
+      remote?: {
+        apiKey?: string;
+        baseUrl?: string;
+        headers?: Record<string, string>;
+      };
+    };
+    qmd?: {
+      enabled?: boolean;
+      command?: string;
+      collections?: Array<{
+        name: string;
+        path: string;
+        pattern?: string;
+        kind?: "memory" | "sessions";
+      }>;
+      includeDefaultMemory?: boolean;
+      maxResults?: number;
+      maxSnippetChars?: number;
+      maxInjectedChars?: number;
+      timeoutMs?: number;
+    };
+  };
+  active?: {
+    contextMaxChars?: number;
+    experienceMaxChars?: number;
+  };
+  task?: {
+    recentEntriesLimit?: number;
+    windowMaxChars?: number;
+    summaryMaxChars?: number;
+  };
   embeddingDimensions?: number;
   /** Similarity threshold (0-1) above which a new remember() merges into an existing record instead of creating a new one. Set to 1 to disable. Default 0.85. */
   dedupeThreshold?: number;
@@ -51,18 +101,57 @@ export class MarvMem {
   private readonly embeddingDimensions: number;
   private readonly dedupeThreshold: number;
   private readonly weights: SearchWeights;
+  readonly active: ActiveMemoryManager;
+  readonly task: TaskContextManager;
+  readonly retrieval: RetrievalManager;
+  readonly maintenance: MaintenanceManager;
 
   /** Serialize mutating operations to prevent read-modify-write races. */
   private mutationQueue: Promise<unknown> = Promise.resolve();
 
   constructor(options: MarvMemOptions = {}) {
-    this.store =
-      options.store ?? new FileMemoryStore(options.storagePath ?? ".marvmem/memory.json");
+    const storageBackend = resolveStorageBackend(options);
+    const storagePath = options.storage?.path ?? options.storagePath ?? ".marvmem/memory.sqlite";
+    const sqlitePath = deriveSqlitePath(storagePath);
+    this.store = options.store ?? createDefaultStore(storageBackend, storagePath);
     this.idFactory = options.idFactory ?? (() => randomUUID());
     this.now = options.now ?? (() => new Date());
     this.embeddingDimensions = options.embeddingDimensions ?? 128;
     this.dedupeThreshold = clamp(options.dedupeThreshold ?? 0.85, 0, 1);
     this.weights = { ...DEFAULT_SEARCH_WEIGHTS, ...options.searchWeights };
+    this.active = new ActiveMemoryManager({
+      store:
+        storageBackend === "memory" || options.store instanceof InMemoryStore
+          ? new InMemoryActiveMemoryStore()
+          : new SqliteActiveMemoryStore(sqlitePath),
+      inferencer: options.inferencer,
+      now: this.now,
+      contextMaxChars: options.active?.contextMaxChars,
+      experienceMaxChars: options.active?.experienceMaxChars,
+    });
+    this.task = new TaskContextManager({
+      store:
+        storageBackend === "memory" || options.store instanceof InMemoryStore
+          ? new InMemoryTaskContextStore()
+          : new SqliteTaskContextStore(sqlitePath),
+      inferencer: options.inferencer,
+      now: this.now,
+      recentEntriesLimit: options.task?.recentEntriesLimit,
+      windowMaxChars: options.task?.windowMaxChars,
+      summaryMaxChars: options.task?.summaryMaxChars,
+    });
+    this.retrieval = new RetrievalManager({
+      memory: this,
+      backend: options.retrieval?.backend,
+      embeddings: options.retrieval?.embeddings,
+      qmd: options.retrieval?.qmd,
+    });
+    this.maintenance = new MaintenanceManager({
+      active: this.active,
+      inferencer: options.inferencer,
+      now: this.now,
+      memory: this,
+    });
   }
 
   async remember(input: MemoryInput): Promise<MemoryRecord> {
@@ -147,8 +236,10 @@ export class MarvMem {
       if (!record) return null;
 
       const nowIso = this.now().toISOString();
+      const contentChanged = patch.content !== undefined;
       if (patch.content !== undefined) record.content = patch.content.trim();
       if (patch.summary !== undefined) record.summary = patch.summary?.trim() || summarizeContent(record.content);
+      else if (contentChanged) record.summary = summarizeContent(record.content);
       if (patch.confidence !== undefined) record.confidence = clamp(patch.confidence, 0.05, 1);
       if (patch.importance !== undefined) record.importance = clamp(patch.importance, 0, 1);
       if (patch.source !== undefined) record.source = patch.source?.trim() || record.source;
@@ -255,6 +346,39 @@ export class MarvMem {
 
 export function createMarvMem(options: MarvMemOptions = {}): MarvMem {
   return new MarvMem(options);
+}
+
+function createDefaultStore(backend: MemoryStorageBackend, storagePath: string): MemoryStore {
+  if (backend === "memory") {
+    return new InMemoryStore();
+  }
+  if (backend === "json") {
+    return new FileMemoryStore(storagePath.endsWith(".json") ? storagePath : `${storagePath}.json`);
+  }
+  return new SqliteMemoryStore(deriveSqlitePath(storagePath));
+}
+
+function resolveStorageBackend(options: MarvMemOptions): MemoryStorageBackend {
+  if (options.storage?.backend) {
+    return options.storage.backend;
+  }
+  if (options.store instanceof InMemoryStore) {
+    return "memory";
+  }
+  if (options.store instanceof FileMemoryStore) {
+    return "json";
+  }
+  return "sqlite";
+}
+
+function deriveSqlitePath(storagePath: string): string {
+  if (storagePath.endsWith(".sqlite") || storagePath.endsWith(".db")) {
+    return storagePath;
+  }
+  if (storagePath.endsWith(".json")) {
+    return storagePath.replace(/\.json$/u, ".sqlite");
+  }
+  return storagePath.includes(".") ? storagePath : `${storagePath}.sqlite`;
 }
 
 function matchesRequestedScopes(recordScope: MemoryScope, requestedScopes?: MemoryScope[]): boolean {

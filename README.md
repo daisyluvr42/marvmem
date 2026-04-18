@@ -1,49 +1,191 @@
 # MarvMem
 
-MarvMem is a small standalone long-term memory library extracted from Marv and packaged for reuse in other agents.
+MarvMem is a standalone layered memory subsystem extracted from Marv and rebuilt for other agents.
 
 It gives you:
 
-- durable memory records
-- scope-aware search and recall
-- prompt-ready injected context
-- runtime helpers for capturing memories from turns
-- an MCP tool surface
-- thin adapters for agent frameworks
-
-It does not depend on Marv's workspace Markdown memory, task-context store, or QMD sidecar.
+- `Memory Palace`: full retained long-term memory
+- `Active Memory`: compressed `context` and `experience`
+- `Task Context`: rolling summary, recent entries, key decisions, prompt window assembly
+- `Hybrid Retrieval`: builtin recall plus optional remote embeddings
+- `QMD Backend`: optional external retrieval path
+- `Maintenance`: attribution, calibration, rebuild, and deep consolidation
+- runtime helpers, MCP tools, and thin adapters
 
 ## Highlights
 
-- File-backed JSON storage by default
+- SQLite-backed storage by default
+- JSON fallback storage when you want a simple file store
 - In-memory storage for tests and ephemeral sessions
+- Two-layer memory structure: palace + active memory
+- Task-context storage and prompt window assembly
 - Weighted search using lexical overlap, local hash similarity, recency, importance, and scope
+- Optional remote embedding reranking with OpenAI, Gemini, and Voyage
+- Optional QMD retrieval backend
+- Experience attribution, calibration, rebuild, and deep consolidation flows
 - Automatic deduplication for near-identical writes
 - Prompt-ready recall formatting with output length control
-- MCP tools for search, read, write, update, delete, list, and recall
+- MCP tools for palace, active, task, retrieval, and maintenance operations
 
 ## Package Layout
 
-MarvMem is split into three layers:
+MarvMem is split into six layers:
 
-1. `core`: records, scopes, storage, search, recall
-2. `runtime`: turn capture heuristics and reflection helpers
-3. `mcp` and `adapters`: integration surfaces for agents
+1. `core`: palace memory records, scopes, storage, search, recall
+2. `active`: compressed context and experience documents
+3. `task`: task-local state, entries, decisions, and window building
+4. `retrieval`: builtin recall, remote embeddings, and QMD backend
+5. `maintenance`: attribution, calibration, rebuild, deep consolidation
+6. `runtime`, `mcp`, and `adapters`: orchestration and integration surfaces
 
 Available entrypoints:
 
 - `marvmem`
 - `marvmem/core`
+- `marvmem/active`
+- `marvmem/task`
+- `marvmem/retrieval`
+- `marvmem/maintenance`
 - `marvmem/runtime`
 - `marvmem/mcp`
 - `marvmem/adapters`
+- `marvmem/system`
 - `marvmem/adapters/hermes-agent`
 - `marvmem/adapters/openclaw`
 - `marvmem/adapters/marv`
 
+## Architecture
+
+```mermaid
+flowchart TB
+  App["Agent / App"]
+
+  subgraph InterfaceLayer["Interface Layer"]
+    Facade["Facade API"]
+    Adapter["Adapters"]
+    Mcp["MCP Handler"]
+  end
+
+  subgraph RuntimeLayer["Runtime Layer"]
+    Runtime["Memory Runtime"]
+    Capture["Turn Capture"]
+    Recall["Layered Recall Builder"]
+    Reflection["Reflection + Distillation"]
+  end
+
+  subgraph MemoryLayer["Memory Layers"]
+    Palace["Memory Palace"]
+    Active["Active Memory"]
+    Task["Task Context"]
+  end
+
+  subgraph RetrievalLayer["Retrieval Layer"]
+    Builtin["Builtin Retrieval"]
+    Embed["Remote Embedding Providers"]
+    Qmd["QMD Backend"]
+  end
+
+  subgraph MaintenanceLayer["Maintenance Layer"]
+    Attribution["Attribution"]
+    Calibration["Calibration"]
+    Rebuild["Rebuild + Deep Consolidation"]
+  end
+
+  subgraph StorageLayer["Storage Layer"]
+    Sqlite[".marvmem/memory.sqlite"]
+    Json["JSON Fallback"]
+    MemoryStore["In-Memory Store"]
+  end
+
+  App --> Facade
+  App --> Adapter
+  App --> Mcp
+
+  Adapter --> Runtime
+  Mcp --> Runtime
+  Mcp --> Facade
+
+  Facade --> Palace
+  Facade --> Active
+  Facade --> Task
+  Facade --> Builtin
+  Facade --> Attribution
+
+  Runtime --> Capture
+  Runtime --> Recall
+  Runtime --> Reflection
+
+  Capture --> Palace
+  Capture --> Task
+  Reflection --> Active
+  Recall --> Active
+  Recall --> Task
+  Recall --> Builtin
+  Recall --> Qmd
+
+  Builtin --> Embed
+  Palace --> Sqlite
+  Active --> Sqlite
+  Task --> Sqlite
+  Palace --> Json
+  Palace --> MemoryStore
+  Active --> MemoryStore
+  Task --> MemoryStore
+
+  Attribution --> Active
+  Calibration --> Active
+  Calibration --> Palace
+  Rebuild --> Active
+  Rebuild --> Palace
+```
+
+This is the package-level layered structure:
+
+- interface layer: facade API, adapters, and MCP entrypoints
+- runtime layer: layered recall and capture orchestration
+- memory layers: palace, active memory, and task context
+- retrieval layer: builtin recall, remote embeddings, and QMD
+- maintenance layer: attribution, calibration, rebuild, deep consolidation
+- storage layer: SQLite by default, plus JSON and in-memory fallbacks
+
+### Memory Processing Flow
+
+```mermaid
+flowchart LR
+  Turn["Turn / Event"] --> PalaceWrite["Write To Palace"]
+  PalaceWrite --> Dedupe["Deduplicate In Scope"]
+  Dedupe --> Normalize["Normalize + Summarize"]
+  Normalize --> PalaceStore["Persist Palace Record"]
+
+  Turn --> TaskWrite["Append Task Entry"]
+  TaskWrite --> TaskSummary["Rolling Summary"]
+  Turn --> ActiveDistill["Distill Active Context / Experience"]
+
+  Query["Query / Prompt"] --> ActiveRecall["Read Active Memory"]
+  Query --> TaskWindow["Build Task Window"]
+  Query --> Builtin["Builtin Recall"]
+  Builtin --> Embed["Optional Embedding Rerank"]
+  Query --> Qmd["Optional QMD Query"]
+
+  ActiveRecall --> Merge["Merge Recall Layers"]
+  TaskWindow --> Merge
+  Embed --> Merge
+  Qmd --> Merge
+  Merge --> Output["Injected Prompt Context"]
+
+  PalaceStore --> Maintenance["Attribution / Calibration / Rebuild"]
+  ActiveDistill --> Maintenance
+```
+
+This is the memory processing path:
+
+- write path: capture durable facts into the palace, task-local turns into task context, and compressed summaries into active memory
+- retrieval path: combine active memory, task window, builtin recall, and optional QMD results
+- maintenance path: attribute which experience entries were used, then calibrate or rebuild them over time
+
 ## Requirements
 
-- Node.js `>= 20`
+- Node.js `>= 22.13.0`
 - ESM environment
 
 ## Install And Build
@@ -67,7 +209,15 @@ import { createMarvMem } from "marvmem";
 import { createMemoryRuntime } from "marvmem/runtime";
 
 const memory = createMarvMem({
-  storagePath: ".marvmem/memory.json",
+  storage: { backend: "sqlite", path: ".marvmem/memory.sqlite" },
+  inferencer: async ({ kind, prompt }) => ({
+    ok: true,
+    text: `${kind}: ${prompt.slice(0, 200)}`,
+  }),
+  retrieval: {
+    backend: "builtin",
+    embeddings: { provider: "openai" },
+  },
 });
 
 const runtime = createMemoryRuntime({
@@ -79,11 +229,14 @@ const runtime = createMemoryRuntime({
 });
 
 await runtime.captureTurn({
+  taskId: "reply-style",
+  taskTitle: "Reply style guidance",
   userMessage: "Remember that I prefer concise Chinese replies.",
   scopes: [{ type: "user", id: "alice", weight: 1.05 }],
 });
 
 const recall = await runtime.buildRecallContext({
+  taskId: "reply-style",
   userMessage: "How should I answer this user?",
   maxChars: 800,
 });
@@ -136,17 +289,22 @@ A memory record stores:
 import { createMarvMem } from "marvmem";
 
 const memory = createMarvMem({
-  storagePath: ".marvmem/memory.json",
+  storage: { backend: "sqlite", path: ".marvmem/memory.sqlite" },
   dedupeThreshold: 0.85,
 });
 ```
 
 Options:
 
-- `storagePath`: JSON file used by the default file store
+- `storage`: choose `sqlite`, `json`, or `memory`
+- `storagePath`: shorthand storage path, still supported for quick setup
 - `store`: custom storage implementation
 - `idFactory`: custom ID generator
 - `now`: inject a clock for testing
+- `inferencer`: optional LLM compressor for active memory and maintenance flows
+- `retrieval`: builtin or QMD retrieval config, plus optional remote embeddings
+- `active`: active context and experience size controls
+- `task`: task window and rolling-summary controls
 - `embeddingDimensions`: hash-vector size, default `128`
 - `dedupeThreshold`: merge near-identical writes when similarity reaches this threshold
 - `searchWeights`: override ranking weights
@@ -225,7 +383,7 @@ const deleted = await memory.forget("memory-id");
 
 ## Runtime API
 
-`createMemoryRuntime()` adds higher-level flows on top of the core store.
+`createMemoryRuntime()` adds layered recall and capture flows on top of the core store.
 
 ```ts
 import { createMemoryRuntime } from "marvmem/runtime";
@@ -239,7 +397,7 @@ const runtime = createMemoryRuntime({
 
 ### `buildRecallContext()`
 
-Searches memory and returns prompt-ready recall text.
+Builds prompt-ready layered recall text from active memory, task context, and palace retrieval.
 
 ```ts
 const recall = await runtime.buildRecallContext({
@@ -251,10 +409,11 @@ const recall = await runtime.buildRecallContext({
 
 ### `captureTurn()`
 
-Infers durable memories from a user turn and stores them under the resolved scope.
+Infers durable memories from a user turn, updates task context, and refreshes active context.
 
 ```ts
 const capture = await runtime.captureTurn({
+  taskId: "shipping",
   userMessage: "Remember that I prefer concise Chinese replies.",
 });
 
@@ -271,13 +430,79 @@ Current heuristics infer memories for:
 
 ### `captureReflection()`
 
-Stores a reflection or learned summary as an `experience` memory.
+Stores a reflection as palace `experience`, distills active experience, and can record a task decision.
 
 ```ts
 await runtime.captureReflection({
   summary: "We decided the adapter API should stay framework-agnostic.",
   scopes: [{ type: "task", id: "marvmem" }],
+  taskId: "shipping",
   tags: ["design"],
+});
+```
+
+## Layered Memory API
+
+### Active Memory
+
+```ts
+await memory.active.distillContext({
+  scope: { type: "task", id: "shipping" },
+  sessionSummary: "We are preparing release notes and QA handoff.",
+});
+
+await memory.active.distillExperience({
+  scope: { type: "task", id: "shipping" },
+  newData: "Prefer concise release checklists with only actionable items.",
+});
+```
+
+### Task Context
+
+```ts
+await memory.task.create({
+  taskId: "shipping",
+  scope: { type: "task", id: "shipping" },
+  title: "Shipping flow",
+});
+
+await memory.task.appendEntry({
+  taskId: "shipping",
+  role: "user",
+  content: "We still need a final QA checklist.",
+});
+
+await memory.task.addDecision({
+  taskId: "shipping",
+  content: "Keep the checklist short and action-oriented.",
+});
+
+const window = await memory.task.buildWindow({
+  taskId: "shipping",
+  currentQuery: "What is left before release?",
+});
+```
+
+### Retrieval
+
+```ts
+const retrieval = await memory.retrieval.recall("release checklist", {
+  scopes: [{ type: "task", id: "shipping" }],
+  maxChars: 1200,
+});
+```
+
+### Maintenance
+
+```ts
+await memory.maintenance.attributeExperience({
+  scope: { type: "task", id: "shipping" },
+  response: "I will keep the checklist concise and actionable.",
+  outcome: "positive",
+});
+
+await memory.maintenance.calibrateExperience({
+  scope: { type: "task", id: "shipping" },
 });
 ```
 
@@ -308,6 +533,13 @@ Available tools:
 - `memory_update`
 - `memory_delete`
 - `memory_recall`
+- `memory_retrieve`
+- `memory_active_get`
+- `memory_active_distill`
+- `memory_task_append`
+- `memory_task_window`
+- `memory_maintenance_calibrate`
+- `memory_maintenance_rebuild`
 
 Example `tools/call` request:
 
@@ -337,6 +569,8 @@ const response = await handler.handleRequest({
 - `scopeId`
 - `maxChars`
 
+`memory_retrieve` runs the configured retrieval stack, including optional remote embeddings and QMD.
+
 ## Adapters
 
 The adapter layer wraps the runtime into a small framework-friendly shape:
@@ -351,7 +585,7 @@ The adapter layer wraps the runtime into a small framework-friendly shape:
 import { createMarvMem } from "marvmem";
 import { createHermesAgentMemoryAdapter } from "marvmem/adapters/hermes-agent";
 
-const memory = createMarvMem({ storagePath: ".marvmem/memory.json" });
+const memory = createMarvMem({ storage: { backend: "sqlite", path: ".marvmem/memory.sqlite" } });
 const adapter = createHermesAgentMemoryAdapter({
   memory,
   defaultScopes: [{ type: "agent", id: "hermes", weight: 1 }],
@@ -372,7 +606,7 @@ const systemPrompt = [promptMemory.systemHint, promptMemory.injectedContext]
 import { createMarvMem } from "marvmem";
 import { createOpenClawMemoryAdapter } from "marvmem/adapters/openclaw";
 
-const memory = createMarvMem({ storagePath: ".marvmem/memory.json" });
+const memory = createMarvMem({ storage: { backend: "sqlite", path: ".marvmem/memory.sqlite" } });
 const adapter = createOpenClawMemoryAdapter({
   memory,
   defaultScopes: [{ type: "task", id: "agent-loop", weight: 1 }],
@@ -396,7 +630,15 @@ const adapter = createMarvMemoryAdapter({
 
 ## Storage
 
-By default, MarvMem uses a file-backed JSON store at the path you provide.
+By default, MarvMem uses a SQLite store at `.marvmem/memory.sqlite`.
+
+If you want the old simple file model, you can still force JSON:
+
+```ts
+const memory = createMarvMem({
+  storage: { backend: "json", path: ".marvmem/memory.json" },
+});
+```
 
 For tests or temporary sessions, use the in-memory store:
 
@@ -421,8 +663,9 @@ npm test
 
 ## Limitations
 
-- Storage is JSON-based, not SQLite-based.
-- Search uses deterministic local hash embeddings plus lexical scoring, not remote embeddings.
+- Palace storage is still exposed through the simple `MemoryStore` CRUD surface, not a fully specialized SQL query layer.
+- Builtin retrieval still starts from deterministic local scoring and adds remote reranking only when configured.
+- QMD integration assumes the `qmd` CLI is installed and reachable when that backend is enabled.
 - Runtime capture is heuristic and intentionally simple.
 - Adapters are intentionally thin because upstream agent APIs may evolve.
 

@@ -21,6 +21,22 @@
       "types": "./dist/core/index.d.ts",
       "default": "./dist/core/index.js"
     },
+    "./active": {
+      "types": "./dist/active/index.d.ts",
+      "default": "./dist/active/index.js"
+    },
+    "./task": {
+      "types": "./dist/task/index.d.ts",
+      "default": "./dist/task/index.js"
+    },
+    "./retrieval": {
+      "types": "./dist/retrieval/index.d.ts",
+      "default": "./dist/retrieval/index.js"
+    },
+    "./maintenance": {
+      "types": "./dist/maintenance/index.d.ts",
+      "default": "./dist/maintenance/index.js"
+    },
     "./runtime": {
       "types": "./dist/runtime/index.d.ts",
       "default": "./dist/runtime/index.js"
@@ -44,6 +60,10 @@
     "./adapters/marv": {
       "types": "./dist/adapters/marv.d.ts",
       "default": "./dist/adapters/marv.js"
+    },
+    "./system": {
+      "types": "./dist/system/index.d.ts",
+      "default": "./dist/system/index.js"
     }
   },
   "files": [
@@ -62,6 +82,6 @@
     "typescript": "^5.9.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13.0"
   }
 }

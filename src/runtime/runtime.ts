@@ -1,5 +1,6 @@
 import { type MarvMem } from "../core/memory.js";
 import type { MemoryInput, MemoryRecord, MemoryScope } from "../core/types.js";
+import type { TaskContextEntry } from "../task/types.js";
 import type {
   CapturedMemoryProposal,
   MemoryCaptureResult,
@@ -20,19 +21,89 @@ export function createMemoryRuntime(params: {
 
   return {
     async buildRecallContext(turn: MemoryTurnInput) {
-      return await params.memory.recall({
+      const scopes = resolveScopes(turn.scopes, options.defaultScopes);
+      const maxChars = turn.maxChars ?? options.maxRecallChars ?? 4_000;
+      const palaceRecall = await params.memory.recall({
         query: turn.userMessage,
         recentMessages: turn.recentMessages,
-        scopes: resolveScopes(turn.scopes, options.defaultScopes),
-        maxChars: turn.maxChars ?? options.maxRecallChars,
+        scopes,
+        maxChars,
       });
+      const retrievalRecall = await params.memory.retrieval.recall(turn.userMessage, {
+        scopes,
+        maxChars,
+      });
+      const activeBlocks = (
+        await Promise.all(scopes.map(async (scope) => await params.memory.active.formatRecall(scope)))
+      )
+        .map((block) => block.trim())
+        .filter(Boolean);
+      const activeLayer = activeBlocks.join("\n\n");
+      const taskWindow = turn.taskId
+        ? await params.memory.task.buildWindow({
+            taskId: turn.taskId,
+            currentQuery: turn.userMessage,
+            toolContext: turn.toolContext,
+            maxChars: Math.max(400, Math.floor(maxChars * 0.35)),
+          })
+        : null;
+      const palaceLayer =
+        params.memory.retrieval.backend === "builtin" &&
+        params.memory.retrieval.usesRemoteEmbeddings
+          ? retrievalRecall.injectedContext
+          : palaceRecall.injectedContext;
+      const retrievalLayer =
+        params.memory.retrieval.backend === "qmd" ? retrievalRecall.injectedContext : undefined;
+      return {
+        ...palaceRecall,
+        injectedContext: [activeLayer, taskWindow?.injectedContext, retrievalLayer, palaceLayer]
+          .filter(Boolean)
+          .join("\n\n")
+          .trim(),
+        layers: {
+          active: activeLayer || undefined,
+          task: taskWindow?.injectedContext || undefined,
+          retrieval: retrievalLayer,
+          palace: palaceLayer || undefined,
+        },
+      };
     },
 
     async captureTurn(turn: MemoryTurnInput): Promise<MemoryCaptureResult> {
       const proposals = inferMemoryProposals(turn);
       const scopes = resolveScopes(turn.scopes, options.defaultScopes);
+      const taskEntries: TaskContextEntry[] = [];
+      if (turn.taskId && scopes[0]) {
+        const task = await params.memory.task.get(turn.taskId);
+        if (!task) {
+          await params.memory.task.create({
+            taskId: turn.taskId,
+            scope: scopes[0],
+            title: turn.taskTitle?.trim() || turn.taskId,
+          });
+        }
+        const userEntry = await params.memory.task.appendEntry({
+          taskId: turn.taskId,
+          role: "user",
+          content: turn.userMessage,
+        });
+        if (userEntry) {
+          taskEntries.push(userEntry);
+        }
+        if (turn.assistantMessage?.trim()) {
+          const assistantEntry = await params.memory.task.appendEntry({
+            taskId: turn.taskId,
+            role: "assistant",
+            content: turn.assistantMessage,
+          });
+          if (assistantEntry) {
+            taskEntries.push(assistantEntry);
+          }
+        }
+        await params.memory.task.distillRollingSummary({ taskId: turn.taskId });
+      }
       if (scopes.length === 0) {
-        return { proposals, stored: [] };
+        return { proposals, stored: [], taskEntries };
       }
       const stored: MemoryRecord[] = [];
       for (const proposal of proposals) {
@@ -54,7 +125,22 @@ export function createMemoryRuntime(params: {
           }),
         );
       }
-      return { proposals, stored };
+      const sessionSummary = [
+        ...(turn.recentMessages ?? []),
+        `user: ${turn.userMessage.trim()}`,
+        turn.assistantMessage?.trim() ? `assistant: ${turn.assistantMessage.trim()}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      for (const scope of scopes) {
+        if (sessionSummary.trim()) {
+          await params.memory.active.distillContext({
+            scope,
+            sessionSummary,
+          });
+        }
+      }
+      return { proposals, stored, taskEntries };
     },
 
     async captureReflection(input) {
@@ -63,7 +149,7 @@ export function createMemoryRuntime(params: {
       if (!scope || !input.summary.trim()) {
         return null;
       }
-      return await params.memory.remember({
+      const stored = await params.memory.remember({
         scope,
         kind: "experience",
         content: input.summary.trim(),
@@ -74,13 +160,25 @@ export function createMemoryRuntime(params: {
         tags: input.tags,
         metadata: input.metadata,
       });
+      await params.memory.active.distillExperience({
+        scope,
+        newData: input.summary.trim(),
+      });
+      if (input.taskId) {
+        await params.memory.task.addDecision({
+          taskId: input.taskId,
+          content: input.summary.trim(),
+          metadata: input.metadata,
+        });
+      }
+      return stored;
     },
 
     buildSystemHint() {
       return [
-        "Use long-term memory when answering questions about prior decisions, preferences, identity, or past work.",
-        "When relevant, inject recalled memory into the prompt before the main answer.",
-        "Persist durable user preferences and explicit remember requests after the turn.",
+        "Use layered memory when answering: active context for current work, task context for local decisions, and long-term memory for durable facts and preferences.",
+        "Inject recalled memory before the main answer when it materially improves accuracy or continuity.",
+        "Persist durable user preferences, explicit remember requests, and reusable lessons after the turn.",
       ].join(" ");
     },
   };
