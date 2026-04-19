@@ -503,6 +503,14 @@ codex mcp add marvmem \
 
 如果当前 Codex 会话没有立刻看到新 server，开一个新会话再试。
 
+接到 Claude Code 的方式：
+
+```bash
+claude mcp add-json -s project marvmem '{"type":"stdio","command":"node","args":["/absolute/path/to/marvmem/dist/bin/marvmem-mcp.js"],"env":{"MARVMEM_SCOPE_TYPE":"agent","MARVMEM_SCOPE_ID":"claude"}}'
+```
+
+这条命令会在当前项目写入 `.mcp.json`。可以用 `claude mcp get marvmem` 确认 server 已连接。
+
 ## 13. 存储方式的选择
 
 SQLite 是默认的存储后端，正式使用时推荐这个：

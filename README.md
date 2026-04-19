@@ -458,6 +458,14 @@ codex mcp add marvmem \
 
 If the current Codex session does not pick up the new server immediately, start a new session after adding it.
 
+Register it with Claude Code:
+
+```bash
+claude mcp add-json -s project marvmem '{"type":"stdio","command":"node","args":["/absolute/path/to/marvmem/dist/bin/marvmem-mcp.js"],"env":{"MARVMEM_SCOPE_TYPE":"agent","MARVMEM_SCOPE_ID":"claude"}}'
+```
+
+This writes a project-scoped `.mcp.json`. You can verify the server is connected with `claude mcp get marvmem`.
+
 ## Adapters
 
 Generic adapters translate host events into lifecycle calls:
