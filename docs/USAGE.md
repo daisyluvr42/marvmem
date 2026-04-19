@@ -1,49 +1,32 @@
-# MarvMem 使用说明
+# MarvMem 接入指南
 
-这份文档按“怎么接进去、怎么选层、怎么上线”来写，适合第一次把 MarvMem 接进 agent、服务或工具链。
+按"怎么接、怎么选、怎么跑"写。第一次接的直接按顺序看。
 
-## 1. 先理解它是什么
+## 1. 它是什么
 
-MarvMem 不是单层记忆表，而是一个分层系统：
+三层记忆，不是一张表：
 
-- `memory palace`
-  全量长期记忆，完整保留
-- `active memory`
-  面向当前工作的压缩记忆，分成 `context` 和 `experience`
-- `task context`
-  当前任务的 recent entries、rolling summary、key decisions
-- `retrieval`
-  builtin recall，可选 remote embeddings，可选 QMD
-- `maintenance`
-  attribution、calibration、rebuild、deep consolidation
+- **palace** — 全量长期记忆，每条带 scope、kind、confidence、importance、tags
+- **active memory** — 压缩层，分 `context`（当前状态）和 `experience`（可复用经验）
+- **task context** — 任务粒度的 entries、rolling summary、key decisions
 
-如果你想保留 Marv 那种“全量记忆 + 活跃压缩 + 工作区任务态”的优势，MarvMem 的价值就在这里。
+再加 retrieval（检索）、maintenance（维护）、runtime（生命周期编排）三个横切层。
 
 ## 2. 运行要求
 
-- Node.js `>= 22.13.0`
-- ESM 项目
-
-本地开发：
+- Node.js ≥ 22.13.0（用了 `node:sqlite`）
+- ESM
 
 ```bash
 npm install
 npm run build
+npm run check  # 类型检查
+npm test       # 跑测试
 ```
 
-验证：
+## 3. 最小接法
 
-```bash
-npm run check
-npm test
-```
-
-## 3. 最小接入方式
-
-如果你先只想跑起来，最小接法就是：
-
-- 一个 `createMarvMem()`
-- 一个 `createMemoryRuntime()`
+两行就能跑：
 
 ```ts
 import { createMarvMem } from "marvmem";
@@ -63,42 +46,32 @@ const runtime = createMemoryRuntime({
 });
 ```
 
-这样你已经拥有：
+这就有了 palace 存取搜索、active memory 压缩、task context、layered recall。
 
-- palace 存取和搜索
-- active memory 压缩
-- task context 能力
-- layered recall runtime
+`inferencer` 是 distillation / calibration / rebuild 用的 LLM 调用封装。上面给的是 stub，接真模型时替换成你自己的实现。
 
-## 4. scope 怎么设计
+## 4. scope 设计
 
-scope 决定一条记忆属于谁、在哪个上下文生效。
+scope = 这条记忆属于谁。
 
-常见建议：
-
-- `user`
-  用户长期偏好、身份、约束
-- `task`
-  某个具体任务或 workflow 的决定
-- `agent`
-  agent 自己的行为约束
-- `session`
-  会话内临时记忆
-- `document`
-  某个文件、文档或知识对象
-
-例子：
+| type | 典型用途 |
+|------|---------|
+| `user` | 用户偏好、身份 |
+| `task` | 某个任务/workflow 的决定 |
+| `agent` | agent 自己的行为规则 |
+| `session` | 会话级临时记忆 |
+| `document` | 绑定某个文件或文档 |
 
 ```ts
 { type: "user", id: "alice", weight: 1.05 }
-{ type: "task", id: "release-2026-04-18", weight: 1 }
+{ type: "task", id: "release-2026-04-18" }
 ```
 
-`weight` 不是必须的，只在检索排序时作为附加因子。
+`weight` 可选，只影响检索排序。
 
-## 5. palace 怎么用
+## 5. palace
 
-### 写入
+### 写
 
 ```ts
 await memory.remember({
@@ -107,11 +80,12 @@ await memory.remember({
   content: "用户偏好简洁的中文回复。",
   importance: 0.9,
   tags: ["language", "style"],
-  source: "manual",
 });
 ```
 
-### 搜索
+写入时会自动跟已有记录做相似度比对（默认阈值 0.85），撞上了就合并而不是新建。
+
+### 搜
 
 ```ts
 const hits = await memory.search("怎么回复这个用户", {
@@ -120,16 +94,7 @@ const hits = await memory.search("怎么回复这个用户", {
 });
 ```
 
-每个命中都会带：
-
-- `record`
-- `score`
-- `reasons.lexical`
-- `reasons.hash`
-- `reasons.recency`
-- `reasons.importance`
-- `reasons.scope`
-- `snippet`
+每个 hit 带 `score` 和 `reasons`（lexical / hash / recency / importance / scope 五维分数），还有 `snippet`。
 
 ### 召回成 prompt 文本
 
@@ -139,156 +104,126 @@ const recall = await memory.recall({
   scopes: [{ type: "user", id: "alice", weight: 1.05 }],
   maxChars: 800,
 });
+// recall.injectedContext 可以直接拼进 system prompt
 ```
 
-这个适合你只想用 palace，不想先接整套 runtime 的场景。
+只想用 palace 不接 runtime 的话，到这里就够了。
 
-## 6. active memory 怎么用
+## 6. active memory
 
-active memory 分两部分：
+分两块：
 
-- `context`
-  当前工作上下文，短期、会覆盖
-- `experience`
-  可复用经验，低频更新、偏稳定
-
-### distill active context
+- `context` — 当前工作的上下文快照，短命，每次覆盖
+- `experience` — 可复用的经验总结，慢更新
 
 ```ts
+// 压缩当前上下文
 await memory.active.distillContext({
   scope: { type: "task", id: "release-2026-04-18" },
-  sessionSummary: "我们正在整理发布清单、release notes 和 QA 交接。",
+  sessionSummary: "我们在整理发布清单和 QA 交接。",
 });
-```
 
-### distill active experience
-
-```ts
+// 积累经验
 await memory.active.distillExperience({
   scope: { type: "task", id: "release-2026-04-18" },
-  newData: "发布清单应该尽量短，只保留可执行项。",
+  newData: "发布清单只保留可执行项，不要放说明文字。",
 });
+
+// 读
+const ctx = await memory.active.read("context", { type: "task", id: "release-2026-04-18" });
+const exp = await memory.active.read("experience", { type: "task", id: "release-2026-04-18" });
 ```
 
-### 读取 active memory
+distill 会调 inferencer；没配 inferencer 就直接截断拼接，不会报错。
+
+## 7. task context
+
+管"这个任务里发生了什么"。
 
 ```ts
-const context = await memory.active.read("context", {
-  type: "task",
-  id: "release-2026-04-18",
-});
-
-const experience = await memory.active.read("experience", {
-  type: "task",
-  id: "release-2026-04-18",
-});
-```
-
-## 7. task context 怎么用
-
-task context 负责“当前任务正在发生什么”。
-
-### 建任务
-
-```ts
+// 建任务
 await memory.task.create({
   taskId: "release-flow",
   scope: { type: "task", id: "release-2026-04-18" },
   title: "Release flow",
 });
-```
 
-### 追加 entry
-
-```ts
+// 追加 entry
 await memory.task.appendEntry({
   taskId: "release-flow",
   role: "user",
-  content: "我们还差最终 QA checklist。",
+  content: "还差最终 QA checklist。",
 });
-```
 
-### 记关键决策
-
-```ts
+// 记决策
 await memory.task.addDecision({
   taskId: "release-flow",
-  content: "checklist 保持简短并且可执行。",
+  content: "checklist 保持简短、可执行。",
 });
-```
 
-### 生成 task window
-
-```ts
+// 拼成 prompt 窗口
 const window = await memory.task.buildWindow({
   taskId: "release-flow",
   currentQuery: "发布前还差什么？",
 });
+// window.injectedContext = rolling summary + key decisions + recent entries
+// window.charUsage 告诉你每个部分占了多少字符
 ```
 
-这个 window 适合直接拼到 prompt 前面。
+## 8. runtime
 
-## 8. runtime 怎么接
+不想手动编排三层的话，直接用 runtime。
 
-如果你不想自己手动编排 palace、active、task 三层，直接用 runtime。
-
-### 自动捕获 turn
+### 捕获 turn
 
 ```ts
 const capture = await runtime.captureTurn({
   taskId: "release-flow",
   taskTitle: "Release flow",
-  userMessage: "Remember that I prefer concise Chinese replies.",
+  userMessage: "记住我喜欢简洁的中文回复。",
+  assistantMessage: "好的，以后用简洁中文。",
 });
 ```
 
-它会做这些事：
+一次调用做完这些事：
 
-- 从 turn 里推断 durable memory
-- 写进 palace
-- 写 task entries
-- 更新 rolling summary
-- 刷 active context
+1. 从用户消息里启发式提取 durable memory（显式 remember、偏好、决策、身份）
+2. 写进 palace
+3. 追加 task entries + 更新 rolling summary
+4. 刷 active context
 
-### 生成 layered recall
+### layered recall
 
 ```ts
 const recall = await runtime.buildRecallContext({
   taskId: "release-flow",
   userMessage: "我们之前决定怎么部署来着？",
-  recentMessages: ["刚才还在比较 Fly.io 和 Railway。"],
+  recentMessages: ["刚才在比较 Fly.io 和 Railway。"],
   maxChars: 1000,
 });
 ```
 
-这一步不是单纯 search，而是会组合：
-
-- active context
-- active experience
-- task window
-- palace recall
-- 可选 retrieval backend
+按 active → task window → palace → retrieval 四层合并，结果在 `recall.injectedContext`。各层的原始内容在 `recall.layers`。
 
 ### 写 reflection
 
 ```ts
 await runtime.captureReflection({
   taskId: "release-flow",
-  summary: "adapter API 要保持框架无关，不绑死某个 agent runtime。",
+  summary: "adapter API 要保持框架无关。",
   scopes: [{ type: "task", id: "release-2026-04-18" }],
 });
 ```
 
-## 9. adapter 怎么接
+写 palace experience 记录 + distill active experience + 追加 task decision。
 
-如果你已经有自己的 agent loop，不想自己手拼 recall/capture，可以直接接 adapter。
+## 9. adapter
 
-### 方案 A：逐轮 wrapper
+已经有 agent loop 的话，接 adapter 省事。
 
-适合：
+### 逐轮 wrapper
 
-- 你想保留最完整的自动 capture 行为
-- 可以接受每轮都做 active context / task summary 压缩
+每轮自动 capture + recall：
 
 ```ts
 import { createGenericMemoryAdapter } from "marvmem/adapters";
@@ -298,23 +233,21 @@ const adapter = createGenericMemoryAdapter({
   defaultScopes: [{ type: "agent", id: "support-bot" }],
 });
 
-const promptContext = await adapter.beforePrompt({
-  userMessage: "What should I do next?",
+// 生成回复前
+const { systemHint, injectedContext } = await adapter.beforePrompt({
+  userMessage: "下一步做什么？",
 });
 
+// 生成回复后
 await adapter.afterTurn({
-  userMessage: "Remember that I prefer concise Chinese replies.",
-  assistantMessage: "I will keep replies concise and in Chinese.",
+  userMessage: "记住我偏好简洁中文回复。",
+  assistantMessage: "收到。",
 });
 ```
 
-### 方案 B：session-flush wrapper
+### session-flush wrapper
 
-适合：
-
-- 你接的是 Codex、Claude Code 这类 tool-heavy agent
-- 你希望 recall 每轮可用
-- 但不希望每轮都做 active/task summary
+适合 Codex / Claude Code 这类 tool-heavy agent——recall 每轮可用，但 active context / task summary 延后到 session 结束再压缩：
 
 ```ts
 import { createSessionMemoryAdapter } from "marvmem/adapters";
@@ -324,92 +257,50 @@ const adapter = createSessionMemoryAdapter({
   defaultScopes: [{ type: "session", id: "codex-run-001" }],
 });
 
-const promptContext = await adapter.beforePrompt({
-  userMessage: "What should I do next?",
-  taskId: "release",
-});
-
+await adapter.beforePrompt({ userMessage: "下一步？", taskId: "release" });
 await adapter.afterTurn({
-  userMessage: "We still need the release checklist.",
-  assistantMessage: "I will keep it concise and actionable.",
+  userMessage: "还差 release checklist。",
+  assistantMessage: "好的，保持简短。",
   taskId: "release",
   taskTitle: "Release checklist",
 });
 
+// session 结束时统一 flush
 await adapter.flushSession();
 ```
 
-这个 wrapper 的默认行为是：
-
-- 每轮只做轻量写入
-- recall 仍然每轮可用
-- active context 和 task summary 延后到 `flushSession()` 时统一生成
-
 ### 怎么选
 
-- 想要最省心、自动化最完整
-  用逐轮 wrapper
-- 想把 token 压力降下来，且宿主知道什么时候 session 结束
-  用 session-flush wrapper
-- 想暴露给外部 client / 多 agent 工具调用
-  用 MCP
+| 场景 | 用 |
+|------|----|
+| 全自动、省心 | `createGenericMemoryAdapter` |
+| 想控 token 开销、宿主知道 session 结束时机 | `createSessionMemoryAdapter` |
+| 多 agent 工具调用 / 外部 client | MCP handler |
 
-## 10. retrieval 怎么选
+## 10. retrieval
 
-### 方案 A：只用 builtin
+### 只用 builtin（默认）
 
-适合：
+本地五维加权评分，零外部依赖。
 
-- 本地优先
-- 简单部署
-- 不想依赖外部 provider
+### builtin + remote embeddings
 
-这是默认路径。
-
-### 方案 B：builtin + remote embeddings
-
-适合：
-
-- 想保留本地 recall
-- 但需要更强的语义 rerank
-
-注意：
-
-- 默认不会因为环境变量存在就自动开启 remote embeddings
-- 只有显式配置 `retrieval.embeddings` 时才会启用这条路径
-
-支持：
-
-- OpenAI
-- Gemini
-- Voyage
-
-常用环境变量：
-
-- `OPENAI_API_KEY`
-- `GEMINI_API_KEY` 或 `GOOGLE_API_KEY`
-- `VOYAGE_API_KEY`
-
-示例：
+想要更强的语义 rerank 时用。需要显式配置，不会因为有环境变量就自动开启。
 
 ```ts
 const memory = createMarvMem({
-  storage: { backend: "sqlite", path: ".marvmem/memory.sqlite" },
   retrieval: {
     backend: "builtin",
-    embeddings: { provider: "openai" },
+    embeddings: { provider: "openai" },  // 或 "gemini"、"voyage"、"auto"
   },
 });
 ```
 
-### 方案 C：QMD backend
+环境变量：`OPENAI_API_KEY`、`GEMINI_API_KEY` / `GOOGLE_API_KEY`、`VOYAGE_API_KEY`。
 
-适合：
+### QMD backend
 
-- 你已经有 `qmd` CLI
-- 你想把外部检索后端接进来
-
-示例：
+有 `qmd` CLI 时可以把它当外部检索后端：
 
 ```ts
 const memory = createMarvMem({
@@ -418,145 +309,101 @@ const memory = createMarvMem({
     qmd: {
       enabled: true,
       command: "qmd",
-      collections: [
-        {
-          name: "memory",
-          path: ".marvmem/qmd",
-          pattern: "**/*.md",
-        },
-      ],
+      collections: [{ name: "memory", path: ".marvmem/qmd", pattern: "**/*.md" }],
       includeDefaultMemory: true,
     },
   },
 });
 ```
 
-## 11. maintenance 怎么接
+## 11. maintenance
 
-这一层是 MarvMem 很重要的特点之一，不只是“存完就不管”。
-
-### attribution
-
-判断 agent 的回答激活了哪些 experience 条目：
+不只是存完就不管。
 
 ```ts
+// attribution —— 判断哪些 experience 条目影响了这次回答
 await memory.maintenance.attributeExperience({
   scope: { type: "task", id: "release-2026-04-18" },
-  response: "我会把 checklist 保持简短并且可执行。",
+  response: "checklist 保持简短。",
   outcome: "positive",
 });
-```
 
-### calibration
-
-清理 stale / harmful / weak experience：
-
-```ts
+// calibration —— 清理 zombie / harmful / weak experience
 await memory.maintenance.calibrateExperience({
   scope: { type: "task", id: "release-2026-04-18" },
 });
-```
 
-### rebuild
-
-用 recent palace fragments 重建 experience：
-
-```ts
+// rebuild —— 从 palace 最近的记录重构 experience
 await memory.maintenance.rebuildExperience({
+  scope: { type: "task", id: "release-2026-04-18" },
+});
+
+// deep consolidation —— rebuild + calibrate 一起跑
+await memory.maintenance.deepConsolidate({
   scope: { type: "task", id: "release-2026-04-18" },
 });
 ```
 
-## 12. MCP 怎么接
+## 12. MCP
 
-如果你要暴露给外部 agent 或 MCP client，用：
+暴露给外部 agent / MCP client：
 
 ```ts
 import { createMemoryMcpHandler } from "marvmem/mcp";
-
 const handler = createMemoryMcpHandler({ memory });
 ```
 
-当前工具包括：
+14 个工具：
 
-- `memory_search`
-- `memory_get`
-- `memory_list`
-- `memory_write`
-- `memory_update`
-- `memory_delete`
-- `memory_recall`
-- `memory_retrieve`
-- `memory_active_get`
-- `memory_active_distill`
-- `memory_task_append`
-- `memory_task_window`
-- `memory_maintenance_calibrate`
-- `memory_maintenance_rebuild`
+| 工具 | 一句话 |
+|------|-------|
+| `memory_search` | 按 query 搜 palace |
+| `memory_get` | 按 id 取一条 |
+| `memory_list` | 列记录 |
+| `memory_write` | 写记录（自动去重） |
+| `memory_update` | 改记录 |
+| `memory_delete` | 删记录 |
+| `memory_recall` | 生成 prompt-ready 召回文本 |
+| `memory_retrieve` | 跑完整 retrieval stack |
+| `memory_active_get` | 读 active context / experience |
+| `memory_active_distill` | 压缩 active memory |
+| `memory_task_append` | 追加 task entry（自动建 task） |
+| `memory_task_window` | 生成 task prompt 窗口 |
+| `memory_maintenance_calibrate` | 跑 experience 校准 |
+| `memory_maintenance_rebuild` | 重建 experience |
 
-如果你要的是：
+## 13. 存储
 
-- “给我 prompt-ready recall”
-  用 `memory_recall`
-- “走完整 retrieval stack”
-  用 `memory_retrieve`
-- “操作 active memory”
-  用 `memory_active_*`
-- “操作 task context”
-  用 `memory_task_*`
-
-## 13. 存储怎么选
-
-### 默认：SQLite
-
-推荐给正式使用：
+SQLite 是默认的，正式场景用这个：
 
 ```ts
 storage: { backend: "sqlite", path: ".marvmem/memory.sqlite" }
 ```
 
-### InMemoryStore
-
-适合：
-
-- 单元测试
-- 临时 session
-- demo
+测试 / demo 用 InMemoryStore：
 
 ```ts
 import { createMarvMem, InMemoryStore } from "marvmem";
-
-const memory = createMarvMem({
-  store: new InMemoryStore(),
-});
+const memory = createMarvMem({ store: new InMemoryStore() });
 ```
 
-## 14. 怎么选推荐接法
+## 14. 推荐接法
 
-如果你只要一个可用的分层记忆系统，我建议：
+| 你的情况 | 接法 |
+|---------|------|
+| 单进程，先跑起来 | `createMarvMem()` + `createMemoryRuntime()` |
+| 要对外暴露工具 | 再加 `createMemoryMcpHandler()` |
+| 有 agent 框架，宿主能控 session 生命周期 | `createSessionMemoryAdapter()` |
+| 有 agent 框架，想全自动 | `createGenericMemoryAdapter()` |
+| 只想试 palace | 只用 `memory.remember` / `search` / `recall` |
 
-- 单进程应用
-  `createMarvMem()` + `createMemoryRuntime()`
-- 需要对外暴露工具
-  再加 `createMemoryMcpHandler()`
-- 已经有固定 agent 框架，且宿主能决定 session 结束
-  优先用 `createSessionMemoryAdapter()`
-- 已经有固定 agent 框架，但想全自动逐轮 capture
-  用 `createGenericMemoryAdapter()`
-
-如果你只想先试 palace：
-
-- 只用 `memory.remember/search/recall`
-
-如果你想保留这个系统最有特点的地方：
-
-- 一定要把 `active memory + task context + maintenance` 一起接进去
+最有特点的地方是 active memory + task context + maintenance 这三层一起工作。只接 palace 能用，但差的就是这部分。
 
 ## 15. 当前边界
 
-- palace 这一层对外还是简单的 `MemoryStore` 读写接口，不是完整 SQL CRUD API
-- builtin retrieval 仍然从本地确定性分数出发，remote embeddings 是可选 rerank
-- 开启 QMD backend 时，运行环境里需要已有 `qmd` CLI
-- runtime 抽取规则是轻量启发式
-- session-flush wrapper 的 buffer 只存在 adapter 进程内，由宿主决定何时 flush
-- adapter 层刻意保持很薄，不做重封装
+- palace 对外是 `MemoryStore` 的 `load()` / `save()` 接口，不是 SQL query API
+- builtin retrieval 从确定性本地分数出发，remote embeddings 是可选 rerank
+- QMD 需要运行环境里有 `qmd` CLI
+- turn capture 的记忆提取是启发式正则，不是 LLM call
+- session-flush wrapper 的 buffer 在 adapter 进程内，宿主决定什么时候 flush
+- adapter 层刻意保持薄，不封装框架逻辑
