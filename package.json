@@ -20,6 +20,10 @@
     "mcp",
     "sqlite"
   ],
+  "bin": {
+    "marvmem-mcp": "./dist/bin/marvmem-mcp.js",
+    "marvmem-hermes": "./dist/bin/marvmem-hermes.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -82,6 +86,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
+    "mcp:serve": "node dist/bin/marvmem-mcp.js",
     "test": "tsx --test test/*.test.ts"
   },
   "devDependencies": {

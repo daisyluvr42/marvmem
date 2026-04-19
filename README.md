@@ -27,7 +27,8 @@ This gives you a system that is easier to retrieve from, easier to inject into p
 - Retrieval stack: builtin hybrid recall → optional remote embedding rerank → optional QMD backend
 - Remote embedding providers: OpenAI, Gemini, Voyage
 - Experience maintenance: attribution tracking, zombie entry detection, calibration, rebuild, deep consolidation
-- 14 MCP tools for external integration (JSON-RPC 2.0)
+- 14 MCP tools plus a local stdio MCP server entrypoint
+- Hermes bridge CLI for installing MarvMem into an existing Hermes home directory
 - Thin adapters for agent framework integration
 - Automatic deduplication on write (configurable similarity threshold)
 - Concurrent write protection via mutation queue serialization
@@ -44,11 +45,16 @@ npm install
 npm run build
 ```
 
+Build outputs include:
+
+- `dist/bin/marvmem-mcp.js` for MCP clients like Codex or Claude Code
+- `dist/bin/marvmem-hermes.js` for wiring MarvMem into an existing Hermes install
+
 Verify:
 
 ```bash
 npm run check   # TypeScript type check
-npm test        # 21 tests
+npm test
 ```
 
 ## Quick Start
@@ -119,7 +125,11 @@ src/
 │   ├── runtime.ts     captureTurn, captureReflection, buildRecallContext
 │   └── types.ts       MemoryRuntime interface, MemoryTurnInput
 ├── mcp/               MCP tool surface (JSON-RPC 2.0)
-│   └── handler.ts     14 tools + stdio handler (546 lines)
+│   ├── handler.ts     14 tools + JSON-RPC handler
+│   └── stdio.ts       Local stdio server runner
+├── bin/               Executable entrypoints
+│   ├── marvmem-mcp.ts     Local MCP server CLI
+│   └── marvmem-hermes.ts  Hermes bridge + plugin installer
 ├── adapters/          Agent framework adapters
 │   ├── base.ts        GenericMemoryAdapter (beforePrompt / afterTurn / tools)
 │   ├── openclaw.ts    OpenClaw adapter
@@ -389,7 +399,7 @@ const memory = createMarvMem({
 
 ## MCP Tools
 
-The MCP handler exposes 14 tools via JSON-RPC 2.0:
+For custom hosts, `createMemoryMcpHandler()` exposes 14 tools via JSON-RPC 2.0:
 
 | Tool | Description |
 |------|-------------|
@@ -415,9 +425,42 @@ const handler = createMemoryMcpHandler({ memory });
 const response = await handler.handleRequest(jsonRpcPayload);
 ```
 
+For a production local MCP server, build the repo and run the bundled stdio entrypoint:
+
+```bash
+npm run build
+node dist/bin/marvmem-mcp.js
+```
+
+Defaults:
+
+- storage path: `~/.marvmem/memory.sqlite`
+- retrieval backend: builtin
+- remote embeddings: disabled unless explicitly configured
+
+Useful overrides:
+
+```bash
+MARVMEM_SCOPE_TYPE=agent \
+MARVMEM_SCOPE_ID=codex \
+MARVMEM_STORAGE_PATH="$HOME/.marvmem/memory.sqlite" \
+node dist/bin/marvmem-mcp.js
+```
+
+Register it with Codex:
+
+```bash
+codex mcp add marvmem \
+  --env MARVMEM_SCOPE_TYPE=agent \
+  --env MARVMEM_SCOPE_ID=codex \
+  -- node /absolute/path/to/marvmem/dist/bin/marvmem-mcp.js
+```
+
+If the current Codex session does not pick up the new server immediately, start a new session after adding it.
+
 ## Adapters
 
-Thin adapters translate agent events into lifecycle calls:
+Generic adapters translate host events into lifecycle calls:
 
 ```ts
 import { createGenericMemoryAdapter } from "marvmem/adapters";
@@ -446,6 +489,78 @@ Pre-built adapters:
 | OpenClaw | `createOpenClawMemoryAdapter()` |
 | Hermes | `createHermesAgentMemoryAdapter()` |
 | Marv | `createMarvMemoryAdapter()` |
+
+`createHermesAgentMemoryAdapter()` and `createOpenClawMemoryAdapter()` are meant for hosts that already keep memory in markdown files.
+
+They do four things:
+
+- default to session-flush capture
+- import existing markdown memory files during setup
+- let MarvMem manage the memory state
+- write the host markdown files back after changes so the original prompt path can keep using them
+
+Hermes example:
+
+```ts
+import { createMarvMem } from "marvmem";
+import { installHermesAgentMemoryTakeover } from "marvmem/adapters";
+
+const memory = createMarvMem({
+  storage: { backend: "sqlite", path: "~/.marvmem/memory.sqlite" },
+  inferencer: async ({ kind, prompt }) => ({ ok: true, text: `${kind}: ${prompt}` }),
+});
+
+const { adapter, imported } = await installHermesAgentMemoryTakeover({
+  memory,
+  defaultScopes: [{ type: "agent", id: "hermes" }],
+});
+
+console.log(imported);
+await adapter.afterTurn({
+  userMessage: "Remember that I prefer concise Chinese replies.",
+  assistantMessage: "I will keep responses concise.",
+});
+```
+
+If you already have a real Hermes install and want a low-setup integration, you can install the bridge plugin instead of wiring the adapter by hand:
+
+```bash
+npm run build
+node dist/bin/marvmem-hermes.js install-plugin \
+  --hermes-home ~/.hermes \
+  --storage-path ~/.hermes/marvmem.sqlite \
+  --scope-type agent \
+  --scope-id hermes
+```
+
+This does two things:
+
+- imports `~/.hermes/memories/MEMORY.md` and `USER.md` into MarvMem if the SQLite store is still empty
+- installs a Hermes plugin that syncs turns, built-in `memory` tool writes, and session finalization back into MarvMem
+
+OpenClaw example:
+
+```ts
+import { createMarvMem } from "marvmem";
+import { installOpenClawMemoryTakeover } from "marvmem/adapters";
+
+const memory = createMarvMem({
+  storage: { backend: "sqlite", path: "~/.marvmem/memory.sqlite" },
+  inferencer: async ({ kind, prompt }) => ({ ok: true, text: `${kind}: ${prompt}` }),
+});
+
+const { adapter } = await installOpenClawMemoryTakeover({
+  memory,
+  defaultScopes: [{ type: "agent", id: "openclaw" }],
+});
+
+await adapter.afterTurn({
+  taskTitle: "Release checklist",
+  userMessage: "Remember that we use pnpm workspaces.",
+  assistantMessage: "I will keep using pnpm workspaces.",
+});
+await adapter.flushSession();
+```
 
 ## Storage
 
@@ -525,7 +640,7 @@ marvmem/task         — Task context manager + stores
 marvmem/retrieval    — Retrieval manager + embedding providers
 marvmem/maintenance  — Experience maintenance flows
 marvmem/runtime      — Lifecycle runtime
-marvmem/mcp          — MCP tool handler
+marvmem/mcp          — MCP handler + stdio server helpers
 marvmem/adapters     — Agent framework adapters
 marvmem/system       — Types + SQLite utilities
 ```
@@ -536,8 +651,8 @@ marvmem/system       — Types + SQLite utilities
 - Builtin retrieval starts from deterministic local scoring; remote embeddings are optional rerankers
 - QMD support requires the `qmd` CLI to be available in PATH
 - Turn capture uses heuristic pattern matching for memory proposal inference
-- Active memory is stored in SQLite only (file materialization to `.md` is planned)
-- Adapters are intentionally thin — framework-specific event mapping is the adapter's only job
+- Active memory still lives in SQLite only. The Hermes/OpenClaw file sync currently writes back durable memory files, not every active-memory document
+- Generic adapters are intentionally thin; the Hermes/OpenClaw adapters also import existing markdown memory and write those files back after changes
 - `captureOverflow` and `captureTaskOutcome` lifecycle hooks are planned but not yet implemented
 
 ## Usage Guide

@@ -264,7 +264,94 @@ await adapter.flushSession();
 |---------|---------|
 | 全自动、每轮完整 capture | `createGenericMemoryAdapter` |
 | 想控制 token 开销，宿主能确定 session 结束时机 | `createSessionMemoryAdapter` |
+| 已经有一份 Hermes，想少配一点直接接进去 | `marvmem-hermes install-plugin` |
 | 需要暴露给外部 client 或多 agent 工具调用 | MCP handler |
+
+### 接入 Hermes
+
+如果你要把 Hermes 自带的 `MEMORY.md` / `USER.md` 交给 MarvMem 管理，推荐直接用 `installHermesAgentMemoryTakeover()`。它会做几件事：
+
+- 默认按 session-flush 的方式工作
+- 安装时先把已有的 `md` 内容导入进来
+- 之后由 MarvMem 统一管理这些记忆
+- 每次记忆有变化时，再把结果写回原来的文件
+
+```ts
+import { createMarvMem } from "marvmem";
+import { installHermesAgentMemoryTakeover } from "marvmem/adapters";
+
+const memory = createMarvMem({
+  storage: { backend: "sqlite", path: "~/.marvmem/memory.sqlite" },
+  inferencer: async ({ kind, prompt }) => ({ ok: true, text: `${kind}: ${prompt}` }),
+});
+
+const { adapter, imported } = await installHermesAgentMemoryTakeover({
+  memory,
+  defaultScopes: [{ type: "agent", id: "hermes" }],
+});
+
+console.log(imported);
+
+await adapter.afterTurn({
+  userMessage: "Remember that I prefer concise Chinese replies.",
+  assistantMessage: "I will keep responses concise.",
+});
+```
+
+默认文件位置：
+
+- `~/.hermes/memories/MEMORY.md`
+- `~/.hermes/memories/USER.md`
+
+如果你已经有一份 Hermes，想直接接到现成实例里，不改 Hermes 源码也可以。先 build，再安装 bridge plugin：
+
+```bash
+npm run build
+node dist/bin/marvmem-hermes.js install-plugin \
+  --hermes-home ~/.hermes \
+  --storage-path ~/.hermes/marvmem.sqlite \
+  --scope-type agent \
+  --scope-id hermes
+```
+
+这个命令会先做一次初始化导入，然后把一个 Hermes plugin 写到 `~/.hermes/plugins/marvmem/`。后面 Hermes 每轮结束、原生 `memory` 工具写入、以及 session 结束时，都会自动把变更同步回 MarvMem，再把 `MEMORY.md` / `USER.md` 刷新出来。
+
+### 接入 OpenClaw
+
+如果你要把 OpenClaw 的 markdown memory 交给 MarvMem 管理，同样直接用 `installOpenClawMemoryTakeover()`。当前实现会处理：
+
+- `MEMORY.md`
+- `memory/YYYY-MM-DD.md`
+- `DREAMS.md`
+
+```ts
+import { createMarvMem } from "marvmem";
+import { installOpenClawMemoryTakeover } from "marvmem/adapters";
+
+const memory = createMarvMem({
+  storage: { backend: "sqlite", path: "~/.marvmem/memory.sqlite" },
+  inferencer: async ({ kind, prompt }) => ({ ok: true, text: `${kind}: ${prompt}` }),
+});
+
+const { adapter } = await installOpenClawMemoryTakeover({
+  memory,
+  defaultScopes: [{ type: "agent", id: "openclaw" }],
+});
+
+await adapter.afterTurn({
+  taskTitle: "Release checklist",
+  userMessage: "Remember that we use pnpm workspaces.",
+  assistantMessage: "I will keep using pnpm workspaces.",
+});
+
+await adapter.flushSession();
+```
+
+默认工作区位置：
+
+- `~/.openclaw/workspace/MEMORY.md`
+- `~/.openclaw/workspace/memory/YYYY-MM-DD.md`
+- `~/.openclaw/workspace/DREAMS.md`
 
 ## 10. Retrieval 的配置
 
@@ -335,7 +422,12 @@ await memory.maintenance.deepConsolidate({
 
 ## 12. MCP 的接入
 
-如果你需要把 MarvMem 暴露给外部 agent 或 MCP client，可以使用 MCP handler：
+有两种接法：
+
+- 自己写宿主：直接用 `createMemoryMcpHandler()`
+- 给 Codex、Claude Code、Cursor、Copilot 这类 MCP client 用：运行本地 `marvmem-mcp` stdio server
+
+如果你需要把 MarvMem 嵌进自己的宿主，可以直接使用 MCP handler：
 
 ```ts
 import { createMemoryMcpHandler } from "marvmem/mcp";
@@ -361,6 +453,41 @@ MCP handler 提供了 14 个工具：
 | `memory_maintenance_calibrate` | 执行 experience 校准 |
 | `memory_maintenance_rebuild` | 重建 experience |
 
+如果你是要本地部署一个正式可用的 MCP server，推荐直接运行：
+
+```bash
+npm run build
+node dist/bin/marvmem-mcp.js
+```
+
+默认行为：
+
+- 存储路径：`~/.marvmem/memory.sqlite`
+- retrieval backend：`builtin`
+- remote embeddings：默认关闭，只有显式配置才启用
+
+常用环境变量：
+
+```bash
+MARVMEM_STORAGE_PATH=/custom/path/memory.sqlite
+MARVMEM_SCOPE_TYPE=agent
+MARVMEM_SCOPE_ID=codex
+MARVMEM_RETRIEVAL_BACKEND=builtin
+MARVMEM_EMBEDDINGS_PROVIDER=openai
+MARVMEM_EMBEDDINGS_MODEL=text-embedding-3-small
+```
+
+接到 Codex 的方式：
+
+```bash
+codex mcp add marvmem \
+  --env MARVMEM_SCOPE_TYPE=agent \
+  --env MARVMEM_SCOPE_ID=codex \
+  -- node /absolute/path/to/marvmem/dist/bin/marvmem-mcp.js
+```
+
+如果当前 Codex 会话没有立刻看到新 server，开一个新会话再试。
+
 ## 13. 存储方式的选择
 
 SQLite 是默认的存储后端，正式使用时推荐这个：
@@ -381,7 +508,7 @@ const memory = createMarvMem({ store: new InMemoryStore() });
 | 你的情况 | 推荐接法 |
 |---------|---------|
 | 单进程应用，先跑起来 | `createMarvMem()` + `createMemoryRuntime()` |
-| 需要把记忆工具暴露给外部 | 再加上 `createMemoryMcpHandler()` |
+| 需要把记忆工具暴露给外部 | 优先用 `marvmem-mcp`，自定义宿主再直接用 `createMemoryMcpHandler()` |
 | 有现成的 agent 框架，宿主可以控制 session 结束 | 用 `createSessionMemoryAdapter()` |
 | 有现成的 agent 框架，想全自动处理 | 用 `createGenericMemoryAdapter()` |
 | 只想评估 palace 这一层 | 只用 `memory.remember` / `search` / `recall` |

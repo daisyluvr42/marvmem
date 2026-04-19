@@ -3,6 +3,11 @@ import type { MemoryScope } from "../core/types.js";
 import { createMemoryRuntime, type MemoryRuntime } from "../runtime/index.js";
 
 type JsonRpcId = string | number | null;
+const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2024-11-05"] as const;
+const SERVER_INSTRUCTIONS =
+  "Use memory_recall when continuity or prior decisions matter. " +
+  "Use memory_write for durable user preferences, facts, or explicit remember requests. " +
+  "Use memory_task_append and memory_task_window for longer task-focused work.";
 
 export type MemoryToolDefinition = {
   name: string;
@@ -427,10 +432,20 @@ export function createMemoryMcpHandler(params: {
       const method = typeof request.method === "string" ? request.method : "";
 
       if (method === "initialize") {
+        const paramsRecord = asRecord(request.params);
+        const requestedVersion = typeof paramsRecord?.protocolVersion === "string"
+          ? paramsRecord.protocolVersion
+          : "";
+        const protocolVersion = SUPPORTED_PROTOCOL_VERSIONS.includes(
+          requestedVersion as (typeof SUPPORTED_PROTOCOL_VERSIONS)[number],
+        )
+          ? requestedVersion
+          : SUPPORTED_PROTOCOL_VERSIONS[0];
         return rpcResult(id, {
-          protocolVersion: "2024-11-05",
+          protocolVersion,
           serverInfo: { name: "marvmem", version: "0.1.0" },
           capabilities: { tools: {} },
+          instructions: SERVER_INSTRUCTIONS,
         });
       }
 
