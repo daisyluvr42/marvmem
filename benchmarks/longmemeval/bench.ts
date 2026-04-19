@@ -1,31 +1,25 @@
 #!/usr/bin/env node
 /**
- * MarvMem LongMemEval Benchmark
- * 
- * Tests MarvMem's retrieval against the LongMemEval dataset (500 questions, ~19k sessions).
- * 
- * For each question:
- *   1. Ingest all haystack sessions as palace records
- *   2. Query with memory.search()
- *   3. Check if the ground-truth session is in top-K
+ * MarvMem LongMemEval Benchmark — with optional remote embedding rerank
  * 
  * Usage:
- *   node --experimental-strip-types benchmarks/longmemeval/bench.ts [options]
+ *   # Baseline (hash only)
+ *   node --experimental-strip-types benchmarks/longmemeval/bench.ts
  * 
- * Options:
- *   --data <path>     Path to longmemeval_s_cleaned.json (default: benchmarks/longmemeval/longmemeval_s_cleaned.json)
- *   --top-k <n>       Top-K to evaluate (default: 10)
- *   --limit <n>       Only run first N questions (default: all)
- *   --output <path>   JSONL output path (default: benchmarks/results/lme_marvmem_<timestamp>.jsonl)
- *   --weights <json>  Override search weights as JSON, e.g. '{"lexical":0.5,"hash":0.3}'
+ *   # With BGE-M3 via LM Studio
+ *   node --experimental-strip-types benchmarks/longmemeval/bench.ts \
+ *     --embed-url http://127.0.0.1:1234 --embed-model text-embedding-bge-m3
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 
-// Import MarvMem from the built dist (run from project root: node --experimental-strip-types benchmarks/longmemeval/bench.ts)
 const marvmemPath = resolve(import.meta.dirname, "../../dist/index.js");
 const { createMarvMem, InMemoryStore } = await import(marvmemPath);
+
+// Also import cosineSimilarity for reranking
+const hashEmbPath = resolve(import.meta.dirname, "../../dist/core/hash-embedding.js");
+const { cosineSimilarity } = await import(hashEmbPath);
 
 // ── Types ──────────────────────────────────────────────────────────────
 type Turn = { role: string; content: string };
@@ -53,8 +47,48 @@ type BenchResult = {
   ndcg5: number;
   ndcg10: number;
   elapsedMs: number;
-  rank: number | null;  // rank of first ground-truth hit, null if not found
+  rank: number | null;
 };
+
+// ── Embedding client ───────────────────────────────────────────────────
+class RemoteEmbedder {
+  private readonly baseUrl: string;
+  private readonly model: string;
+  private readonly batchSize: number;
+
+  constructor(baseUrl: string, model: string, batchSize: number = 32) {
+    this.baseUrl = baseUrl;
+    this.model = model;
+    this.batchSize = batchSize;
+  }
+
+  async embed(texts: string[]): Promise<number[][]> {
+    const allVectors: number[][] = [];
+    // Truncate to speed up local embedding (4k chars ≈ 1.3k tokens, well under 8192 limit)
+    const maxChars = 4_000;
+    const truncated = texts.map(t => t.length > maxChars ? t.slice(0, maxChars) : t);
+    for (let i = 0; i < truncated.length; i += this.batchSize) {
+      const batch = truncated.slice(i, i + this.batchSize);
+      const response = await fetch(`${this.baseUrl}/v1/embeddings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: this.model, input: batch }),
+      });
+      if (!response.ok) {
+        throw new Error(`Embedding request failed: ${response.status} ${await response.text()}`);
+      }
+      const data = (await response.json()) as { data: { embedding: number[] }[] };
+      for (const item of data.data) {
+        allVectors.push(item.embedding);
+      }
+    }
+    return allVectors;
+  }
+
+  async embedOne(text: string): Promise<number[]> {
+    return (await this.embed([text]))[0];
+  }
+}
 
 // ── Metrics ────────────────────────────────────────────────────────────
 function recallAtK(retrievedIds: string[], groundTruthIds: string[], k: number): boolean {
@@ -79,25 +113,28 @@ function findRank(retrievedIds: string[], groundTruthIds: string[]): number | nu
   return null;
 }
 
-// ── Session text builder ───────────────────────────────────────────────
 function buildSessionText(session: Record<string, Turn>, date?: string): string {
   const keys = Object.keys(session).sort((a, b) => Number(a) - Number(b));
-  const turns = keys.map(k => {
-    const t = session[k];
-    return `${t.role}: ${t.content}`;
-  });
-  const header = date ? `[Date: ${date}]\n` : "";
-  return header + turns.join("\n");
+  const turns = keys.map(k => `${session[k].role}: ${session[k].content}`);
+  return (date ? `[Date: ${date}]\n` : "") + turns.join("\n");
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, v));
 }
 
 // ── CLI args ───────────────────────────────────────────────────────────
-function parseArgs(): { dataPath: string; topK: number; limit: number; outputPath: string; weights: Record<string, number> | null } {
+function parseArgs() {
   const args = process.argv.slice(2);
   let dataPath = resolve(import.meta.dirname, "longmemeval_s_cleaned.json");
   let topK = 10;
   let limit = 0;
   let outputPath = "";
   let weights: Record<string, number> | null = null;
+  let embedUrl = "";
+  let embedModel = "";
+  let embedBatch = 32;
+  let embedWeight = 0.35;  // default: 65% builtin + 35% vector
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--data" && args[i + 1]) dataPath = resolve(args[++i]);
@@ -105,29 +142,35 @@ function parseArgs(): { dataPath: string; topK: number; limit: number; outputPat
     else if (args[i] === "--limit" && args[i + 1]) limit = parseInt(args[++i], 10);
     else if (args[i] === "--output" && args[i + 1]) outputPath = resolve(args[++i]);
     else if (args[i] === "--weights" && args[i + 1]) weights = JSON.parse(args[++i]);
+    else if (args[i] === "--embed-url" && args[i + 1]) embedUrl = args[++i];
+    else if (args[i] === "--embed-model" && args[i + 1]) embedModel = args[++i];
+    else if (args[i] === "--embed-batch" && args[i + 1]) embedBatch = parseInt(args[++i], 10);
+    else if (args[i] === "--embed-weight" && args[i + 1]) embedWeight = parseFloat(args[++i]);
   }
 
   if (!outputPath) {
     const ts = new Date().toISOString().replace(/[:-]/g, "").slice(0, 15);
+    const tag = embedModel ? `_${embedModel.replace(/[^a-zA-Z0-9]/g, "_")}` : "";
     const resultsDir = resolve(import.meta.dirname, "../results");
     if (!existsSync(resultsDir)) mkdirSync(resultsDir, { recursive: true });
-    outputPath = resolve(resultsDir, `lme_marvmem_${ts}.jsonl`);
+    outputPath = resolve(resultsDir, `lme_marvmem${tag}_${ts}.jsonl`);
   }
 
-  return { dataPath, topK, limit, outputPath, weights };
+  const embedder = embedUrl && embedModel ? new RemoteEmbedder(embedUrl, embedModel, embedBatch) : null;
+  return { dataPath, topK, limit, outputPath, weights, embedder, embedWeight };
 }
 
 // ── Main ───────────────────────────────────────────────────────────────
 async function main() {
   const opts = parseArgs();
+  const mode = opts.embedder ? `hybrid (${opts.embedWeight * 100}% vector)` : "builtin (hash only)";
   console.log(`\n🧠 MarvMem × LongMemEval Benchmark`);
+  console.log(`   Mode:    ${mode}`);
   console.log(`   Data:    ${opts.dataPath}`);
   console.log(`   Top-K:   ${opts.topK}`);
   console.log(`   Limit:   ${opts.limit || "all"}`);
   console.log(`   Output:  ${opts.outputPath}\n`);
 
-  // Load dataset
-  console.log("Loading dataset...");
   const raw = readFileSync(opts.dataPath, "utf-8");
   const questions: LMEQuestion[] = JSON.parse(raw);
   const total = opts.limit > 0 ? Math.min(opts.limit, questions.length) : questions.length;
@@ -140,36 +183,67 @@ async function main() {
     const q = questions[qi];
     const qStart = Date.now();
 
-    // Create a fresh in-memory MarvMem for each question (isolated haystack)
     const memory = createMarvMem({
       store: new InMemoryStore(),
-      dedupeThreshold: 1,  // disable dedup — each session is unique
+      dedupeThreshold: 1,
       ...(opts.weights ? { searchWeights: opts.weights } : {}),
     });
 
-    // Ingest all haystack sessions as palace records
+    // Build session texts for potential embedding
+    const sessionTexts: string[] = [];
+    const sessionIds: string[] = [];
+
     for (let si = 0; si < q.haystack_sessions.length; si++) {
-      const sessionText = buildSessionText(q.haystack_sessions[si], q.haystack_dates[si]);
-      const sessionId = q.haystack_session_ids[si];
+      const text = buildSessionText(q.haystack_sessions[si], q.haystack_dates[si]);
+      const sid = q.haystack_session_ids[si];
+      sessionTexts.push(text);
+      sessionIds.push(sid);
       await memory.remember({
-        scope: { type: "session", id: sessionId },
+        scope: { type: "session", id: sid },
         kind: "session",
-        content: sessionText,
+        content: text,
         importance: 0.5,
         tags: [],
-        metadata: { sessionId, date: q.haystack_dates[si] },
+        metadata: { sessionId: sid, date: q.haystack_dates[si] },
       });
     }
 
-    // Search
-    const hits = await memory.search(q.question, {
-      maxResults: Math.max(opts.topK, 10),
+    // Get base hits (larger pool for reranking, but bounded to reduce embedding cost)
+    const candidatePool = opts.embedder ? 20 : Math.max(opts.topK, 10);
+    const baseHits = await memory.search(q.question, {
+      maxResults: candidatePool,
       minScore: 0,
     });
 
-    // Map hits back to session IDs
-    const retrievedIds = hits.map(h => h.record.scope.id);
-    const retrievedScores = hits.map(h => h.score);
+    let finalHits: { id: string; score: number }[];
+
+    if (opts.embedder && baseHits.length > 0) {
+      // Embed query + all candidate documents
+      const queryVec = await opts.embedder.embedOne(q.question);
+      const docTexts = baseHits.map((h: any) =>
+        [h.record.kind, h.record.content].filter(Boolean).join("\n"),
+      );
+      const docVecs = await opts.embedder.embed(docTexts);
+
+      // Combine scores: builtin * (1-w) + vector * w
+      const builtinWeight = 1 - opts.embedWeight;
+      finalHits = baseHits.map((h: any, idx: number) => {
+        const vecScore = clamp(cosineSimilarity(queryVec, docVecs[idx] ?? []), 0, 1);
+        return {
+          id: h.record.scope.id as string,
+          score: h.score * builtinWeight + vecScore * opts.embedWeight,
+        };
+      });
+      finalHits.sort((a, b) => b.score - a.score);
+    } else {
+      finalHits = baseHits.map((h: any) => ({
+        id: h.record.scope.id as string,
+        score: h.score as number,
+      }));
+    }
+
+    const retrievedIds = finalHits.map(h => h.id);
+    const retrievedScores = finalHits.map(h => h.score);
 
     const result: BenchResult = {
       questionId: q.question_id,
@@ -188,7 +262,6 @@ async function main() {
 
     results.push(result);
 
-    // Progress
     const hitSymbol = result.hitAt5 ? "✅" : result.hitAt10 ? "🟡" : "❌";
     if ((qi + 1) % 25 === 0 || qi === total - 1) {
       const running5 = results.filter(r => r.hitAt5).length;
@@ -201,14 +274,14 @@ async function main() {
 
   const totalMs = Date.now() - startTime;
 
-  // ── Summary ────────────────────────────────────────────────────────
+  // ── Summary ──────────────────────────────────────────────────────────
   const hit5 = results.filter(r => r.hitAt5).length;
   const hit10 = results.filter(r => r.hitAt10).length;
   const avgNdcg5 = results.reduce((s, r) => s + r.ndcg5, 0) / results.length;
   const avgNdcg10 = results.reduce((s, r) => s + r.ndcg10, 0) / results.length;
 
   console.log(`\n${"━".repeat(60)}`);
-  console.log(`MarvMem LongMemEval Results`);
+  console.log(`MarvMem LongMemEval Results [${mode}]`);
   console.log(`${"━".repeat(60)}`);
   console.log(`Questions: ${total}`);
   console.log(`R@5:       ${(hit5 / total * 100).toFixed(1)}% (${hit5}/${total})`);
@@ -224,12 +297,9 @@ async function main() {
     if (!categories.has(r.questionType)) categories.set(r.questionType, []);
     categories.get(r.questionType)!.push(r);
   }
-
   console.log(`\nPer-category breakdown:`);
   console.log(`${"─".repeat(72)}`);
-  console.log(
-    `${"Category".padEnd(28)} ${"Count".padStart(5)} ${"R@5".padStart(7)} ${"R@10".padStart(7)} ${"NDCG@5".padStart(8)} ${"NDCG@10".padStart(8)}`,
-  );
+  console.log(`${"Category".padEnd(28)} ${"Count".padStart(5)} ${"R@5".padStart(7)} ${"R@10".padStart(7)} ${"NDCG@5".padStart(8)} ${"NDCG@10".padStart(8)}`);
   console.log(`${"─".repeat(72)}`);
 
   const sorted = [...categories.entries()].sort((a, b) => {
@@ -237,7 +307,6 @@ async function main() {
     const rb = b[1].filter(r => r.hitAt5).length / b[1].length;
     return rb - ra;
   });
-
   for (const [cat, items] of sorted) {
     const h5 = items.filter(r => r.hitAt5).length;
     const h10 = items.filter(r => r.hitAt10).length;
@@ -249,7 +318,7 @@ async function main() {
   }
   console.log(`${"─".repeat(72)}`);
 
-  // Miss analysis: show questions that missed at R@10
+  // Miss analysis
   const misses = results.filter(r => !r.hitAt10);
   if (misses.length > 0 && misses.length <= 30) {
     console.log(`\nMisses at R@10 (${misses.length}):`);
@@ -261,8 +330,7 @@ async function main() {
   // Write JSONL
   const dir = dirname(opts.outputPath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const lines = results.map(r => JSON.stringify(r));
-  writeFileSync(opts.outputPath, lines.join("\n") + "\n", "utf-8");
+  writeFileSync(opts.outputPath, results.map(r => JSON.stringify(r)).join("\n") + "\n", "utf-8");
   console.log(`\nResults written to: ${opts.outputPath}`);
 }
 

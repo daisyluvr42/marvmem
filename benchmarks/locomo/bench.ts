@@ -1,26 +1,24 @@
 #!/usr/bin/env node
 /**
- * MarvMem LoCoMo Benchmark
- * 
- * Tests MarvMem's retrieval against LoCoMo (10 multi-turn conversations, 1986 QA pairs).
- * Each conversation has ~20-35 sessions between two speakers.
- * Evidence format: "D<session>:<turn>" maps to session_<session>.
- * 
- * For each QA pair within each conversation:
- *   1. Ingest all sessions as palace records
- *   2. Query with memory.search()
- *   3. Check if the ground-truth session(s) are in top-K
+ * MarvMem LoCoMo Benchmark — with optional remote embedding rerank
  * 
  * Usage:
- *   node --experimental-strip-types benchmarks/locomo/bench.ts [options]
+ *   # Baseline (hash only)
+ *   node --experimental-strip-types benchmarks/locomo/bench.ts
+ * 
+ *   # With BGE-M3 via LM Studio
+ *   node --experimental-strip-types benchmarks/locomo/bench.ts \
+ *     --embed-url http://127.0.0.1:1234 --embed-model text-embedding-bge-m3
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 
-// Import MarvMem from the built dist (run from project root: node --experimental-strip-types benchmarks/locomo/bench.ts)
 const marvmemPath = resolve(import.meta.dirname, "../../dist/index.js");
 const { createMarvMem, InMemoryStore } = await import(marvmemPath);
+
+const hashEmbPath = resolve(import.meta.dirname, "../../dist/core/hash-embedding.js");
+const { cosineSimilarity } = await import(hashEmbPath);
 
 // ── Types ──────────────────────────────────────────────────────────────
 const CATEGORY_NAMES: Record<number, string> = {
@@ -54,6 +52,45 @@ type BenchResult = {
   elapsedMs: number;
 };
 
+// ── Embedding client ───────────────────────────────────────────────────
+class RemoteEmbedder {
+  private readonly baseUrl: string;
+  private readonly model: string;
+  private readonly batchSize: number;
+
+  constructor(baseUrl: string, model: string, batchSize: number = 4) {
+    this.baseUrl = baseUrl;
+    this.model = model;
+    this.batchSize = batchSize;
+  }
+
+  async embed(texts: string[]): Promise<number[][]> {
+    const allVectors: number[][] = [];
+    const maxChars = 4_000;
+    const truncated = texts.map(t => t.length > maxChars ? t.slice(0, maxChars) : t);
+    for (let i = 0; i < truncated.length; i += this.batchSize) {
+      const batch = truncated.slice(i, i + this.batchSize);
+      const response = await fetch(`${this.baseUrl}/v1/embeddings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: this.model, input: batch }),
+      });
+      if (!response.ok) {
+        throw new Error(`Embedding request failed: ${response.status} ${await response.text()}`);
+      }
+      const data = (await response.json()) as { data: { embedding: number[] }[] };
+      for (const item of data.data) {
+        allVectors.push(item.embedding);
+      }
+    }
+    return allVectors;
+  }
+
+  async embedOne(text: string): Promise<number[]> {
+    return (await this.embed([text]))[0];
+  }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 function extractSessions(conv: Record<string, unknown>): Map<string, { text: string; date: string }> {
   const sessions = new Map<string, { text: string; date: string }>();
@@ -75,7 +112,6 @@ function extractSessions(conv: Record<string, unknown>): Map<string, { text: str
 }
 
 function evidenceToSessions(evidence: string[]): string[] {
-  // D1:3 → session_1, D2:8 → session_2
   const sessions = new Set<string>();
   for (const e of evidence) {
     const match = e.match(/^D(\d+)/);
@@ -98,6 +134,10 @@ function ndcgAtK(retrieved: string[], groundTruth: string[], k: number): number 
   return 0;
 }
 
+function clamp(v: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, v));
+}
+
 // ── CLI args ───────────────────────────────────────────────────────────
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -105,28 +145,40 @@ function parseArgs() {
   let topK = 10;
   let limit = 0;
   let outputPath = "";
+  let embedUrl = "";
+  let embedModel = "";
+  let embedBatch = 4;
+  let embedWeight = 0.35;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--data" && args[i + 1]) dataPath = resolve(args[++i]);
     else if (args[i] === "--top-k" && args[i + 1]) topK = parseInt(args[++i], 10);
     else if (args[i] === "--limit" && args[i + 1]) limit = parseInt(args[++i], 10);
     else if (args[i] === "--output" && args[i + 1]) outputPath = resolve(args[++i]);
+    else if (args[i] === "--embed-url" && args[i + 1]) embedUrl = args[++i];
+    else if (args[i] === "--embed-model" && args[i + 1]) embedModel = args[++i];
+    else if (args[i] === "--embed-batch" && args[i + 1]) embedBatch = parseInt(args[++i], 10);
+    else if (args[i] === "--embed-weight" && args[i + 1]) embedWeight = parseFloat(args[++i]);
   }
 
   if (!outputPath) {
     const ts = new Date().toISOString().replace(/[:-]/g, "").slice(0, 15);
+    const tag = embedModel ? `_${embedModel.replace(/[^a-zA-Z0-9]/g, "_")}` : "";
     const resultsDir = resolve(import.meta.dirname, "../results");
     if (!existsSync(resultsDir)) mkdirSync(resultsDir, { recursive: true });
-    outputPath = resolve(resultsDir, `locomo_marvmem_${ts}.jsonl`);
+    outputPath = resolve(resultsDir, `locomo_marvmem${tag}_${ts}.jsonl`);
   }
 
-  return { dataPath, topK, limit, outputPath };
+  const embedder = embedUrl && embedModel ? new RemoteEmbedder(embedUrl, embedModel, embedBatch) : null;
+  return { dataPath, topK, limit, outputPath, embedder, embedWeight };
 }
 
 // ── Main ───────────────────────────────────────────────────────────────
 async function main() {
   const opts = parseArgs();
+  const mode = opts.embedder ? `hybrid (${opts.embedWeight * 100}% vector)` : "builtin (hash only)";
   console.log(`\n🧠 MarvMem × LoCoMo Benchmark`);
+  console.log(`   Mode:    ${mode}`);
   console.log(`   Data:    ${opts.dataPath}`);
   console.log(`   Top-K:   ${opts.topK}`);
   console.log(`   Output:  ${opts.outputPath}\n`);
@@ -142,15 +194,16 @@ async function main() {
     const sessions = extractSessions(conv.conversation as Record<string, unknown>);
     console.log(`Conv ${conv.sample_id}: ${sessions.size} sessions, ${conv.qa.length} QAs`);
 
-    // Create one MarvMem instance per conversation (all sessions ingested)
     const memory = createMarvMem({
       store: new InMemoryStore(),
       dedupeThreshold: 1,
     });
 
     // Ingest all sessions
+    const sessionTexts = new Map<string, string>();
     for (const [sessionId, { text, date }] of sessions) {
       const content = date ? `[Date: ${date}]\n${text}` : text;
+      sessionTexts.set(sessionId, content);
       await memory.remember({
         scope: { type: "session", id: sessionId },
         kind: "session",
@@ -161,6 +214,19 @@ async function main() {
       });
     }
 
+    // Pre-embed all sessions once per conversation (much faster than per-question)
+    let sessionVecs: Map<string, number[]> | null = null;
+    if (opts.embedder) {
+      const ids = [...sessionTexts.keys()];
+      const texts = ids.map(id => sessionTexts.get(id)!);
+      const vecs = await opts.embedder.embed(texts);
+      sessionVecs = new Map();
+      for (let i = 0; i < ids.length; i++) {
+        sessionVecs.set(ids[i], vecs[i]);
+      }
+      console.log(`  Embedded ${ids.length} sessions`);
+    }
+
     // Query each QA pair
     let convHits = 0;
     for (let qi = 0; qi < conv.qa.length; qi++) {
@@ -168,13 +234,36 @@ async function main() {
       const qStart = Date.now();
       const gtSessions = evidenceToSessions(qa.evidence);
 
+      const candidatePool = opts.embedder ? 20 : opts.topK;
       const hits = await memory.search(qa.question, {
-        maxResults: opts.topK,
+        maxResults: candidatePool,
         minScore: 0,
       });
 
-      const retrievedSessions = hits.map((h: any) => h.record.scope.id);
-      const retrievedScores = hits.map((h: any) => h.score);
+      let finalHits: { id: string; score: number }[];
+
+      if (opts.embedder && sessionVecs && hits.length > 0) {
+        const queryVec = await opts.embedder.embedOne(qa.question);
+        const builtinWeight = 1 - opts.embedWeight;
+        finalHits = hits.map((h: any) => {
+          const sid = h.record.scope.id as string;
+          const sVec = sessionVecs!.get(sid);
+          const vecScore = sVec ? clamp(cosineSimilarity(queryVec, sVec), 0, 1) : 0;
+          return {
+            id: sid,
+            score: h.score * builtinWeight + vecScore * opts.embedWeight,
+          };
+        });
+        finalHits.sort((a, b) => b.score - a.score);
+      } else {
+        finalHits = hits.map((h: any) => ({
+          id: h.record.scope.id as string,
+          score: h.score as number,
+        }));
+      }
+
+      const retrievedSessions = finalHits.map(h => h.id);
+      const retrievedScores = finalHits.map(h => h.score);
 
       const result: BenchResult = {
         convId: conv.sample_id,
@@ -206,7 +295,7 @@ async function main() {
   const avgNdcg = allResults.reduce((s, r) => s + r.ndcg10, 0) / allResults.length;
 
   console.log(`\n${"━".repeat(60)}`);
-  console.log(`MarvMem LoCoMo Results (top-${opts.topK})`);
+  console.log(`MarvMem LoCoMo Results [${mode}] (top-${opts.topK})`);
   console.log(`${"━".repeat(60)}`);
   console.log(`Total QA pairs: ${allResults.length}`);
   console.log(`R@5:            ${(hit5 / allResults.length * 100).toFixed(1)}% (${hit5}/${allResults.length})`);
