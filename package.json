@@ -22,7 +22,8 @@
   ],
   "bin": {
     "marvmem-mcp": "./dist/bin/marvmem-mcp.js",
-    "marvmem-hermes": "./dist/bin/marvmem-hermes.js"
+    "marvmem-hermes": "./dist/bin/marvmem-hermes.js",
+    "marvmem-openclaw": "./dist/bin/marvmem-openclaw.js"
   },
   "exports": {
     ".": {

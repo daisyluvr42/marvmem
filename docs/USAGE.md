@@ -321,6 +321,7 @@ node dist/bin/marvmem-hermes.js install-plugin \
 如果你要把 OpenClaw 的 markdown memory 交给 MarvMem 管理，同样直接用 `installOpenClawMemoryTakeover()`。当前实现会处理：
 
 - `MEMORY.md`
+- `USER.md`
 - `memory/YYYY-MM-DD.md`
 - `DREAMS.md`
 
@@ -350,8 +351,22 @@ await adapter.flushSession();
 默认工作区位置：
 
 - `~/.openclaw/workspace/MEMORY.md`
+- `~/.openclaw/workspace/USER.md`
 - `~/.openclaw/workspace/memory/YYYY-MM-DD.md`
 - `~/.openclaw/workspace/DREAMS.md`
+
+如果你已经有一份真实的 OpenClaw 安装，想尽量少配东西，直接装 bridge plugin 就行：
+
+```bash
+npm run build
+node dist/bin/marvmem-openclaw.js install-plugin \
+  --scope-type agent \
+  --scope-id openclaw
+```
+
+这个命令会先做一次初始化导入，然后把一个 OpenClaw plugin 写到 `~/.openclaw/plugins/marvmem/`。后面 OpenClaw 每轮开始前会先取 MarvMem 的 recall，上下文注入到 prompt 里；每轮结束后，再把这一轮对话写回 MarvMem，并刷新 `MEMORY.md` / `USER.md` / `DREAMS.md` 和当天的 `memory/YYYY-MM-DD.md`。
+
+如果当前 OpenClaw 会话本身已经配好了正常的 HTTP 模型 provider，这个 bridge 还会直接复用那一套 provider/model 来做 MarvMem 的 session summary。也就是说，OpenClaw 这条接法默认不需要再额外给 MarvMem 配一套总结模型。
 
 ## 10. Retrieval 的配置
 

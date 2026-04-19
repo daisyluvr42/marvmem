@@ -191,9 +191,8 @@ export function inferMemoryProposals(turn: MemoryTurnInput): CapturedMemoryPropo
   }
 
   const proposals: CapturedMemoryProposal[] = [];
-  const explicitRemember = stripLeadingCue(
-    text,
-    /^(remember(?: that| this)?|please remember|记住|记一下|请记住)\s*[:,\-]?\s*/iu,
+  const explicitRemember = normalizeMemoryCandidate(
+    stripLeadingCue(text, /^(remember(?: that| this)?|please remember|记住|记一下|请记住)\s*[:,\-]?\s*/iu),
   );
   if (explicitRemember) {
     proposals.push({
@@ -208,10 +207,14 @@ export function inferMemoryProposals(turn: MemoryTurnInput): CapturedMemoryPropo
   }
 
   if (/(i prefer|i like|please reply|use chinese|use english|我更喜欢|请用|以后用|不要用)/iu.test(text)) {
+    const candidate =
+      explicitRemember && /(i prefer|i like|please reply|use chinese|use english|我更喜欢|请用|以后用|不要用)/iu.test(explicitRemember)
+        ? explicitRemember
+        : normalizeMemoryCandidate(text);
     proposals.push({
       kind: "preference",
-      content: text,
-      summary: text,
+      content: candidate,
+      summary: candidate,
       confidence: 0.82,
       importance: 0.8,
       source: "turn_inference",
@@ -220,10 +223,11 @@ export function inferMemoryProposals(turn: MemoryTurnInput): CapturedMemoryPropo
   }
 
   if (/(we decided|let'?s use|we will use|改用|我们决定|我们以后用)/iu.test(text)) {
+    const candidate = normalizeMemoryCandidate(text);
     proposals.push({
       kind: "decision",
-      content: text,
-      summary: text,
+      content: candidate,
+      summary: candidate,
       confidence: 0.78,
       importance: 0.78,
       source: "turn_inference",
@@ -232,10 +236,11 @@ export function inferMemoryProposals(turn: MemoryTurnInput): CapturedMemoryPropo
   }
 
   if (/(my name is|i am |我是|我的名字是)/iu.test(text)) {
+    const candidate = normalizeMemoryCandidate(text);
     proposals.push({
       kind: "identity",
-      content: text,
-      summary: text,
+      content: candidate,
+      summary: candidate,
       confidence: 0.76,
       importance: 0.75,
       source: "turn_inference",
@@ -249,6 +254,30 @@ export function inferMemoryProposals(turn: MemoryTurnInput): CapturedMemoryPropo
 function stripLeadingCue(value: string, pattern: RegExp): string | null {
   const stripped = value.replace(pattern, "").trim();
   return stripped && stripped !== value ? stripped : null;
+}
+
+function normalizeMemoryCandidate(value: string | null): string {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) {
+    return "";
+  }
+  const sentences = trimmed
+    .split(/(?<=[.!?。！？])\s+/u)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+  if (sentences.length < 2) {
+    return trimmed;
+  }
+  const followup = sentences.slice(1).join(" ");
+  if (
+    !/[?？]/u.test(followup) &&
+    !/^(what|which|when|where|why|how|should|can|could|would|will|do|does|did|is|are|am|what's|what is|有没有|是否|要不要|该|应该|怎么|如何|什么|哪|能不能|可不可以)\b/iu.test(
+      sentences[1] ?? "",
+    )
+  ) {
+    return trimmed;
+  }
+  return sentences[0]!;
 }
 
 function resolveScopes(primary?: MemoryScope[], fallback?: MemoryScope[]): MemoryScope[] {

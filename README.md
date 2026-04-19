@@ -562,6 +562,22 @@ await adapter.afterTurn({
 await adapter.flushSession();
 ```
 
+If you already have a real OpenClaw install and want the low-setup path, install the bridge plugin instead:
+
+```bash
+npm run build
+node dist/bin/marvmem-openclaw.js install-plugin \
+  --scope-type agent \
+  --scope-id openclaw
+```
+
+This does two things:
+
+- imports `~/.openclaw/workspace/MEMORY.md`, `USER.md`, `memory/YYYY-MM-DD.md`, and `DREAMS.md` into MarvMem if the SQLite store is still empty
+- installs an OpenClaw plugin that uses the official hooks to inject recall context before each turn and sync the turn back into MarvMem after the run
+
+When the current OpenClaw session is using a normal HTTP-backed model provider, the bridge also reuses that same model for MarvMem's session summaries. You do not need to add a second MarvMem-specific LLM config just for `active` or `task` distillation.
+
 ## Storage
 
 ### SQLite (default)
