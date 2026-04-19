@@ -33,6 +33,43 @@ This gives you a system that is easier to retrieve from, easier to inject into p
 - Automatic deduplication on write (configurable similarity threshold)
 - Concurrent write protection via mutation queue serialization
 
+## Benchmarks
+
+All numbers below are reproducible from this repository with the commands in [`benchmarks/BENCHMARKS.md`](benchmarks/BENCHMARKS.md). Per-question result files are committed under `benchmarks/results/`.
+
+The following results were obtained with **zero external dependencies and zero API calls** — using only the built-in FNV-1a hash embedding (128-dim) and five-dimensional weighted scoring. No LLM, no remote embedding, no vector database.
+
+**LongMemEval — retrieval recall (500 questions, ~19k sessions):**
+
+| Metric | Score | LLM Required |
+|---|---|---|
+| R@5 | **89.6%** | None |
+| R@10 | **94.6%** | None |
+| NDCG@10 | **0.834** | None |
+
+Strongest categories: knowledge-update (96.2% R@5), multi-session (95.5%), single-session-user (92.9%). Weakest: single-session-preference (46.7%) — indirect preferences require semantic understanding beyond what hash embeddings provide.
+
+**LoCoMo — retrieval recall (1986 QA pairs, 10 conversations):**
+
+| Metric | Score | LLM Required |
+|---|---|---|
+| R@5 | **84.1%** | None |
+| R@10 | **92.0%** | None |
+| NDCG@10 | **0.733** | None |
+
+Strongest categories: adversarial (96.1% R@10) — scope-aware design naturally mitigates speaker confusion; temporal-inference (95.1%).
+
+These are baseline floor numbers. MarvMem's retrieval layer supports optional remote embedding rerank (OpenAI / Gemini / Voyage) and LLM rerank, which are expected to significantly improve the weaker categories when enabled. Full per-category breakdown, weakness analysis, and reproduction steps: [`benchmarks/BENCHMARKS.md`](benchmarks/BENCHMARKS.md).
+
+**Reproducing every result:**
+
+```bash
+npm run build
+# download datasets (see benchmarks/BENCHMARKS.md for URLs)
+npm run bench:lme      # LongMemEval — ~14 seconds
+npm run bench:locomo   # LoCoMo — ~10 seconds
+```
+
 ## Requirements
 
 - Node.js `>= 22.13.0` (uses `node:sqlite` built-in)

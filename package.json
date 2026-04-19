@@ -88,7 +88,9 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "mcp:serve": "node dist/bin/marvmem-mcp.js",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test test/*.test.ts",
+    "bench:lme": "node --experimental-strip-types benchmarks/longmemeval/bench.ts",
+    "bench:locomo": "node --experimental-strip-types benchmarks/locomo/bench.ts"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",

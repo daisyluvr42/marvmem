@@ -2,3 +2,6 @@
 dist/
 node_modules/
 docs/plans/
+benchmarks/longmemeval/*.json
+benchmarks/locomo/*.json
+benchmarks/results/
