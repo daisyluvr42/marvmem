@@ -5,3 +5,4 @@ docs/plans/
 benchmarks/longmemeval/*.json
 benchmarks/locomo/*.json
 benchmarks/results/
+benchmarks/COMPARISON.md
