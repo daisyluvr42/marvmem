@@ -314,14 +314,22 @@ SCOPE_ID = ${JSON.stringify(input.scope.id)}
 
 def _run(*args):
     try:
-        subprocess.run(
+        completed = subprocess.run(
             [NODE, BRIDGE, *args],
             check=False,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
         )
     except Exception as exc:
         logger.warning("marvmem bridge failed: %s", exc)
+        return
+    if completed.returncode != 0:
+        stderr = (completed.stderr or "").strip()
+        if stderr:
+            logger.warning("marvmem bridge exited with status %s: %s", completed.returncode, stderr)
+        else:
+            logger.warning("marvmem bridge exited with status %s", completed.returncode)
 
 def _base_args():
     return [

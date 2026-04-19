@@ -346,6 +346,70 @@ test("Hermes memory writes can be mirrored into MarvMem records", async () => {
   assert.equal(records.length, 0);
 });
 
+test("OpenClaw install-plugin writes async bridge calls into the generated plugin", async () => {
+  const root = await mkdtemp(join(tmpdir(), "marvmem-openclaw-plugin-"));
+  const workspacePath = join(root, ".openclaw", "workspace");
+  const dailyDir = join(workspacePath, "memory");
+
+  try {
+    await mkdir(dailyDir, { recursive: true });
+    await writeFile(join(workspacePath, "MEMORY.md"), "", "utf8");
+    await writeFile(join(workspacePath, "USER.md"), "", "utf8");
+
+    await execFileAsync(process.execPath, [
+      "--import",
+      "tsx",
+      join(process.cwd(), "src/bin/marvmem-openclaw.ts"),
+      "install-plugin",
+      "--openclaw-home",
+      root,
+      "--storage-path",
+      join(root, ".openclaw", "marvmem.sqlite"),
+    ]);
+
+    const pluginSource = await readFile(join(root, ".openclaw", "plugins", "marvmem", "index.mjs"), "utf8");
+
+    assert.match(pluginSource, /import \{ execFile \} from "node:child_process"/);
+    assert.doesNotMatch(pluginSource, /execFileSync/);
+    assert.match(pluginSource, /const result = await runJson\("before-prompt", args\)/);
+    assert.match(pluginSource, /void runVoid\("after-turn"/);
+    assert.match(pluginSource, /void runVoid\("flush-session", args\)/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Hermes install-plugin keeps bridge stderr visible in the generated plugin", async () => {
+  const root = await mkdtemp(join(tmpdir(), "marvmem-hermes-plugin-"));
+  const memoriesDir = join(root, "memories");
+
+  try {
+    await mkdir(memoriesDir, { recursive: true });
+    await writeFile(join(memoriesDir, "MEMORY.md"), "", "utf8");
+    await writeFile(join(memoriesDir, "USER.md"), "", "utf8");
+
+    await execFileAsync(process.execPath, [
+      "--import",
+      "tsx",
+      join(process.cwd(), "src/bin/marvmem-hermes.ts"),
+      "install-plugin",
+      "--hermes-home",
+      root,
+      "--storage-path",
+      join(root, "marvmem.sqlite"),
+    ]);
+
+    const pluginSource = await readFile(join(root, "plugins", "marvmem", "__init__.py"), "utf8");
+
+    assert.match(pluginSource, /stderr=subprocess\.PIPE/);
+    assert.match(pluginSource, /text=True/);
+    assert.match(pluginSource, /if completed\.returncode != 0:/);
+    assert.match(pluginSource, /logger\.warning\("marvmem bridge exited with status %s: %s"/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function execFileAsync(file: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     execFile(file, args, (error, _stdout, stderr) => {

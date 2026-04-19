@@ -358,6 +358,8 @@ async function installPlugin(options: CliOptions): Promise<void> {
 }
 
 function buildPluginPackageJson() {
+  // Keep this pinned to the OpenClaw SDK build we validated the generated plugin against.
+  const pluginSdkVersion = "2026.3.24-beta.2";
   return {
     name: "marvmem-openclaw-plugin",
     version: "1.0.0",
@@ -365,12 +367,12 @@ function buildPluginPackageJson() {
     openclaw: {
       extensions: ["./index.mjs"],
       compat: {
-        pluginApi: ">=2026.3.24-beta.2",
-        minGatewayVersion: "2026.3.24-beta.2",
+        pluginApi: `>=${pluginSdkVersion}`,
+        minGatewayVersion: pluginSdkVersion,
       },
       build: {
-        openclawVersion: "2026.3.24-beta.2",
-        pluginSdkVersion: "2026.3.24-beta.2",
+        openclawVersion: pluginSdkVersion,
+        pluginSdkVersion,
       },
     },
   };
@@ -395,7 +397,7 @@ function buildPluginModule(input: {
 }): string {
   const bridgePath = realpathSync(fileURLToPath(import.meta.url));
   const nodePath = process.execPath;
-  return `import { execFileSync } from "node:child_process";
+  return `import { execFile } from "node:child_process";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 const NODE = ${JSON.stringify(nodePath)};
@@ -431,23 +433,35 @@ function inferencerArgs(config) {
   return ["--inferencer", JSON.stringify(config)];
 }
 
-function runJson(command, args) {
+function execBridge(command, args) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      NODE,
+      [BRIDGE, command, ...baseArgs(), ...args],
+      { encoding: "utf8" },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(stderr || error.message);
+          return;
+        }
+        resolve(stdout);
+      },
+    );
+  });
+}
+
+async function runJson(command, args) {
   try {
-    const stdout = execFileSync(NODE, [BRIDGE, command, ...baseArgs(), ...args], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
+    const stdout = await execBridge(command, args);
     return JSON.parse(stdout);
   } catch {
     return null;
   }
 }
 
-function runVoid(command, args) {
+async function runVoid(command, args) {
   try {
-    execFileSync(NODE, [BRIDGE, command, ...baseArgs(), ...args], {
-      stdio: ["ignore", "ignore", "ignore"],
-    });
+    await execBridge(command, args);
   } catch {
     // best effort bridge only
   }
@@ -729,7 +743,7 @@ export default definePluginEntry({
       for (const message of recentMessages) {
         args.push("--recent-message", message);
       }
-      const result = runJson("before-prompt", args);
+      const result = await runJson("before-prompt", args);
       if (!result) {
         return { appendSystemContext: MANAGED_FILES_NOTE };
       }
@@ -752,7 +766,7 @@ export default definePluginEntry({
       if (!turn) {
         return;
       }
-      runVoid("after-turn", [
+      void runVoid("after-turn", [
         "--user-message",
         turn.userMessage,
         "--assistant-message",
@@ -776,7 +790,7 @@ export default definePluginEntry({
         recentMessagesBySession.delete(sessionKey);
         inferencerBySession.delete(sessionKey);
       }
-      runVoid("flush-session", args);
+      void runVoid("flush-session", args);
     });
   },
 });
