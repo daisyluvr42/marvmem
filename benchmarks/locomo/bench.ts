@@ -53,41 +53,83 @@ type BenchResult = {
 };
 
 // ── Embedding client ───────────────────────────────────────────────────
+type EmbedProvider = "openai" | "gemini";
+
 class RemoteEmbedder {
+  private readonly provider: EmbedProvider;
   private readonly baseUrl: string;
   private readonly model: string;
+  private readonly apiKey: string;
   private readonly batchSize: number;
+  private readonly maxChars: number;
 
-  constructor(baseUrl: string, model: string, batchSize: number = 4) {
-    this.baseUrl = baseUrl;
-    this.model = model;
-    this.batchSize = batchSize;
+  constructor(opts: {
+    provider: EmbedProvider;
+    baseUrl: string;
+    model: string;
+    apiKey?: string;
+    batchSize?: number;
+    maxChars?: number;
+  }) {
+    this.provider = opts.provider;
+    this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
+    this.model = opts.model;
+    this.apiKey = opts.apiKey ?? "";
+    this.batchSize = opts.batchSize ?? (opts.provider === "gemini" ? 20 : 4);
+    this.maxChars = opts.maxChars ?? 4_000;
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
+  async embed(texts: string[], taskType: "query" | "document" = "document"): Promise<number[][]> {
+    const truncated = texts.map(t => t.length > this.maxChars ? t.slice(0, this.maxChars) : t);
+    if (this.provider === "gemini") return this.embedGemini(truncated, taskType);
+    return this.embedOpenAI(truncated);
+  }
+
+  async embedOne(text: string): Promise<number[]> {
+    return (await this.embed([text], "query"))[0];
+  }
+
+  private async embedOpenAI(texts: string[]): Promise<number[][]> {
     const allVectors: number[][] = [];
-    const maxChars = 4_000;
-    const truncated = texts.map(t => t.length > maxChars ? t.slice(0, maxChars) : t);
-    for (let i = 0; i < truncated.length; i += this.batchSize) {
-      const batch = truncated.slice(i, i + this.batchSize);
+    for (let i = 0; i < texts.length; i += this.batchSize) {
+      const batch = texts.slice(i, i + this.batchSize);
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (this.apiKey) headers["Authorization"] = `Bearer ${this.apiKey}`;
       const response = await fetch(`${this.baseUrl}/v1/embeddings`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ model: this.model, input: batch }),
       });
-      if (!response.ok) {
-        throw new Error(`Embedding request failed: ${response.status} ${await response.text()}`);
-      }
+      if (!response.ok) throw new Error(`OpenAI embedding failed: ${response.status}`);
       const data = (await response.json()) as { data: { embedding: number[] }[] };
-      for (const item of data.data) {
-        allVectors.push(item.embedding);
-      }
+      for (const item of data.data) allVectors.push(item.embedding);
     }
     return allVectors;
   }
 
-  async embedOne(text: string): Promise<number[]> {
-    return (await this.embed([text]))[0];
+  private async embedGemini(texts: string[], taskType: "query" | "document"): Promise<number[][]> {
+    const geminiTask = taskType === "query" ? "RETRIEVAL_QUERY" : "RETRIEVAL_DOCUMENT";
+    const allVectors: number[][] = [];
+    for (let i = 0; i < texts.length; i += this.batchSize) {
+      const batch = texts.slice(i, i + this.batchSize);
+      const requests = batch.map(text => ({
+        model: `models/${this.model}`,
+        content: { parts: [{ text }] },
+        taskType: geminiTask,
+      }));
+      const response = await fetch(
+        `${this.baseUrl}/v1beta/models/${this.model}:batchEmbedContents`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
+          body: JSON.stringify({ requests }),
+        },
+      );
+      if (!response.ok) throw new Error(`Gemini embedding failed: ${response.status}`);
+      const data = (await response.json()) as { embeddings: { values: number[] }[] };
+      for (const item of data.embeddings) allVectors.push(item.values);
+    }
+    return allVectors;
   }
 }
 
@@ -145,9 +187,11 @@ function parseArgs() {
   let topK = 10;
   let limit = 0;
   let outputPath = "";
+  let embedProvider: EmbedProvider = "openai";
   let embedUrl = "";
   let embedModel = "";
-  let embedBatch = 4;
+  let embedKey = "";
+  let embedBatch = 0;
   let embedWeight = 0.35;
 
   for (let i = 0; i < args.length; i++) {
@@ -155,11 +199,16 @@ function parseArgs() {
     else if (args[i] === "--top-k" && args[i + 1]) topK = parseInt(args[++i], 10);
     else if (args[i] === "--limit" && args[i + 1]) limit = parseInt(args[++i], 10);
     else if (args[i] === "--output" && args[i + 1]) outputPath = resolve(args[++i]);
+    else if (args[i] === "--embed-provider" && args[i + 1]) embedProvider = args[++i] as EmbedProvider;
     else if (args[i] === "--embed-url" && args[i + 1]) embedUrl = args[++i];
     else if (args[i] === "--embed-model" && args[i + 1]) embedModel = args[++i];
+    else if (args[i] === "--embed-key" && args[i + 1]) embedKey = args[++i];
     else if (args[i] === "--embed-batch" && args[i + 1]) embedBatch = parseInt(args[++i], 10);
     else if (args[i] === "--embed-weight" && args[i + 1]) embedWeight = parseFloat(args[++i]);
   }
+
+  if (!embedUrl && embedProvider === "gemini") embedUrl = "https://generativelanguage.googleapis.com";
+  if (!embedModel && embedProvider === "gemini") embedModel = "gemini-embedding-001";
 
   if (!outputPath) {
     const ts = new Date().toISOString().replace(/[:-]/g, "").slice(0, 15);
@@ -169,7 +218,10 @@ function parseArgs() {
     outputPath = resolve(resultsDir, `locomo_marvmem${tag}_${ts}.jsonl`);
   }
 
-  const embedder = embedUrl && embedModel ? new RemoteEmbedder(embedUrl, embedModel, embedBatch) : null;
+  const embedder = (embedUrl && embedModel) ? new RemoteEmbedder({
+    provider: embedProvider, baseUrl: embedUrl, model: embedModel,
+    apiKey: embedKey, batchSize: embedBatch || undefined,
+  }) : null;
   return { dataPath, topK, limit, outputPath, embedder, embedWeight };
 }
 

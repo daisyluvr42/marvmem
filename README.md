@@ -42,16 +42,18 @@ All numbers below are reproducible from this repository. Full methodology and pe
 | Mode | R@5 | R@10 | NDCG@10 | LLM Required |
 |---|---|---|---|---|
 | Builtin (zero-dep) | 89.6% | 94.6% | 0.834 | None |
-| **+ BGE-M3 rerank** | **95.8%** | **97.6%** | **0.915** | **None** |
+| + BGE-M3 (local, 1024d) | 95.8% | 97.6% | **0.915** | None |
+| **+ Gemini (3072d)** | **96.2%** | **97.6%** | 0.902 | **None** |
 
 **LoCoMo — retrieval recall (1986 QA pairs, 10 conversations):**
 
 | Mode | R@5 | R@10 | NDCG@10 | LLM Required |
 |---|---|---|---|---|
 | Builtin (zero-dep) | 84.1% | 92.0% | 0.733 | None |
-| **+ BGE-M3 rerank** | **88.3%** | **94.8%** | **0.789** | **None** |
+| **+ BGE-M3 (local, 1024d)** | **88.3%** | **94.8%** | **0.789** | **None** |
+| + Gemini (3072d) | 87.6% | 94.2% | 0.775 | None |
 
-Builtin mode uses only the built-in FNV-1a hash embedding and five-dimensional weighted scoring — zero external dependencies, zero API calls, 24 seconds total. Hybrid mode adds local BGE-M3 (1024-dim) as a 35%-weight rerank signal on top of the builtin scores.
+Builtin mode uses only the built-in FNV-1a hash embedding and five-dimensional weighted scoring — zero external dependencies, zero API calls, 24 seconds total. Hybrid mode adds an embedding rerank signal (35% weight) on top of the builtin scores. BGE-M3 runs locally; Gemini runs via API.
 
 **Reproducing every result:**
 
@@ -64,6 +66,10 @@ npm run bench:locomo   # Builtin — ~10 seconds
 # With local embedding (requires OpenAI-compatible embedding server)
 node --experimental-strip-types benchmarks/longmemeval/bench.ts \
   --embed-url http://127.0.0.1:1234 --embed-model text-embedding-bge-m3
+
+# With Gemini embedding (requires API key)
+node --experimental-strip-types benchmarks/longmemeval/bench.ts \
+  --embed-provider gemini --embed-key YOUR_GEMINI_API_KEY
 ```
 
 
