@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createMarvMem, InMemoryStore } from "../src/core/index.js";
+import { InMemoryVectorStore } from "../src/retrieval/vector-memory.js";
+import { InMemoryEntityStore } from "../src/entity/store-memory.js";
 
 test("remembers and searches scoped memories", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
@@ -134,4 +136,87 @@ test("search filters unrelated memories by default", async () => {
   });
 
   assert.equal(hits.length, 0);
+});
+
+test("remember and forget keep the vector index in sync", async () => {
+  const vectorStore = new InMemoryVectorStore();
+  const memory = createMarvMem({
+    store: new InMemoryStore(),
+    retrieval: { vectorStore },
+  });
+
+  const record = await memory.remember({
+    scope: { type: "repo", id: "marvmem" },
+    kind: "fact",
+    content: "This repo uses ESM modules.",
+  });
+
+  assert.equal(await vectorStore.count(), 1);
+
+  await memory.forget(record.id);
+  assert.equal(await vectorStore.count(), 0);
+});
+
+test("entity links can surface alias-based searches", async () => {
+  const entityStore = new InMemoryEntityStore();
+  const memory = createMarvMem({
+    store: new InMemoryStore(),
+    entityStore,
+    entityExtractor: {
+      async extract(text: string) {
+        if (text.toLowerCase().includes("typescript")) {
+          return [{ name: "TypeScript", kind: "tech", aliases: ["TS"] }];
+        }
+        return [];
+      },
+    },
+  });
+
+  await memory.remember({
+    scope: { type: "repo", id: "marvmem" },
+    kind: "fact",
+    content: "This project uses TypeScript for the backend.",
+  });
+
+  const hits = await memory.search("TS", {
+    scopes: [{ type: "repo", id: "marvmem", weight: 1 }],
+  });
+
+  assert.ok(hits.length > 0);
+  assert.equal(hits[0]!.record.content, "This project uses TypeScript for the backend.");
+  assert.equal(hits[0]!.reasons.entity, 1);
+});
+
+test("recall includes related entity graph context", async () => {
+  const entityStore = new InMemoryEntityStore();
+  const memory = createMarvMem({
+    store: new InMemoryStore(),
+    entityStore,
+    entityExtractor: {
+      async extract(text: string) {
+        const entities = [];
+        if (text.toLowerCase().includes("react")) {
+          entities.push({ name: "React", kind: "tech" as const });
+        }
+        if (text.toLowerCase().includes("next.js")) {
+          entities.push({ name: "Next.js", kind: "tech" as const });
+        }
+        return entities;
+      },
+    },
+  });
+
+  await memory.remember({
+    scope: { type: "repo", id: "marvmem" },
+    kind: "fact",
+    content: "This project uses React with Next.js.",
+  });
+
+  const recall = await memory.recall({
+    query: "React",
+    scopes: [{ type: "repo", id: "marvmem" }],
+  });
+
+  assert.ok(recall.injectedContext.includes("Related entity graph"));
+  assert.ok(recall.injectedContext.includes("co_occurs"));
 });

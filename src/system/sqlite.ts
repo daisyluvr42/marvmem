@@ -110,6 +110,48 @@ export function ensureMemorySubsystemSchema(db: DatabaseSync): void {
       "FOREIGN KEY (task_id) REFERENCES task_context(task_id) ON DELETE CASCADE" +
       ");",
   );
+
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS entities (" +
+      "id TEXT PRIMARY KEY, " +
+      "name TEXT NOT NULL, " +
+      "name_key TEXT NOT NULL UNIQUE, " +
+      "aliases_json TEXT NOT NULL, " +
+      "kind TEXT NOT NULL, " +
+      "metadata_json TEXT, " +
+      "created_at TEXT NOT NULL, " +
+      "updated_at TEXT NOT NULL" +
+      ");",
+  );
+  db.exec("CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);");
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS entity_links (" +
+      "entity_id TEXT NOT NULL, " +
+      "memory_id TEXT NOT NULL, " +
+      "relation TEXT NOT NULL, " +
+      "confidence REAL NOT NULL, " +
+      "created_at TEXT NOT NULL, " +
+      "PRIMARY KEY (entity_id, memory_id, relation), " +
+      "FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE" +
+      ");",
+  );
+  db.exec("CREATE INDEX IF NOT EXISTS idx_entity_links_memory ON entity_links(memory_id);");
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS entity_relations (" +
+      "id TEXT PRIMARY KEY, " +
+      "source_entity_id TEXT NOT NULL, " +
+      "target_entity_id TEXT NOT NULL, " +
+      "relation TEXT NOT NULL, " +
+      "memory_id TEXT, " +
+      "confidence REAL NOT NULL, " +
+      "created_at TEXT NOT NULL, " +
+      "FOREIGN KEY (source_entity_id) REFERENCES entities(id) ON DELETE CASCADE, " +
+      "FOREIGN KEY (target_entity_id) REFERENCES entities(id) ON DELETE CASCADE" +
+      ");",
+  );
+  db.exec("CREATE INDEX IF NOT EXISTS idx_entity_relations_source ON entity_relations(source_entity_id);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_entity_relations_target ON entity_relations(target_entity_id);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_entity_relations_memory ON entity_relations(memory_id);");
 }
 
 export function parseJsonObject(

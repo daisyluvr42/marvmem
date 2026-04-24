@@ -77,6 +77,42 @@
     "./system": {
       "types": "./dist/system/index.d.ts",
       "default": "./dist/system/index.js"
+    },
+    "./cloud": {
+      "types": "./dist/cloud/index.d.ts",
+      "default": "./dist/cloud/index.js"
+    },
+    "./platform": {
+      "types": "./dist/platform/index.d.ts",
+      "default": "./dist/platform/index.js"
+    },
+    "./inspect": {
+      "types": "./dist/inspect/index.d.ts",
+      "default": "./dist/inspect/index.js"
+    },
+    "./bridge": {
+      "types": "./dist/bridge/index.d.ts",
+      "default": "./dist/bridge/index.js"
+    },
+    "./products/coding": {
+      "types": "./dist/products/coding/index.d.ts",
+      "default": "./dist/products/coding/index.js"
+    },
+    "./products/runtime": {
+      "types": "./dist/products/runtime/index.d.ts",
+      "default": "./dist/products/runtime/index.js"
+    },
+    "./auth": {
+      "types": "./dist/auth/index.d.ts",
+      "default": "./dist/auth/index.js"
+    },
+    "./http": {
+      "types": "./dist/http/index.d.ts",
+      "default": "./dist/http/index.js"
+    },
+    "./entity": {
+      "types": "./dist/entity/index.d.ts",
+      "default": "./dist/entity/index.js"
     }
   },
   "files": [
@@ -85,7 +121,7 @@
     "docs/USAGE.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && mkdir -p dist/console dist/cloud && cp src/console/index.html dist/console/index.html && cp src/cloud/schema.sql dist/cloud/schema.sql",
     "check": "tsc -p tsconfig.json --noEmit",
     "mcp:serve": "node dist/bin/marvmem-mcp.js",
     "test": "tsx --test test/*.test.ts",

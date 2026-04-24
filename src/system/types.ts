@@ -8,7 +8,10 @@ export type MemoryInferencerKind =
   | "experience"
   | "task_summary"
   | "attribution"
-  | "calibration";
+  | "calibration"
+  | "evaluation"
+  | "entity_extraction"
+  | "memory_extraction";
 
 export type MemoryInferencerInput = {
   kind: MemoryInferencerKind;

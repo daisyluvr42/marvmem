@@ -6,6 +6,7 @@ export type MemoryTurnInput = {
   assistantMessage?: string;
   recentMessages?: string[];
   scopes?: MemoryScope[];
+  proposals?: CapturedMemoryProposal[];
   maxChars?: number;
   taskId?: string;
   taskTitle?: string;
@@ -15,6 +16,12 @@ export type MemoryTurnInput = {
 export type CapturedMemoryProposal = Omit<MemoryInput, "scope"> & {
   scopes?: MemoryScope[];
 };
+
+export type MemoryProposalExtractorInput = Omit<MemoryTurnInput, "proposals" | "maxChars">;
+
+export interface MemoryProposalExtractor {
+  extract(input: MemoryProposalExtractorInput): Promise<CapturedMemoryProposal[]>;
+}
 
 export type MemoryCaptureResult = {
   proposals: CapturedMemoryProposal[];

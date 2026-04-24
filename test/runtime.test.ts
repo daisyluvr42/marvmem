@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createMarvMem, InMemoryStore } from "../src/core/index.js";
-import { createMemoryRuntime } from "../src/runtime/index.js";
+import { LlmMemoryProposalExtractor, createMemoryRuntime } from "../src/runtime/index.js";
 
 test("captures explicit remember requests", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
@@ -62,4 +62,29 @@ test("builds recall context through the runtime layer", async () => {
   });
 
   assert.match(recall.injectedContext, /easy adapter APIs/);
+});
+
+test("optional LLM proposal extractor can capture structured memories", async () => {
+  const memory = createMarvMem({ store: new InMemoryStore() });
+  const runtime = createMemoryRuntime({
+    memory,
+    defaultScopes: [{ type: "user", id: "alice" }],
+    proposalExtractor: new LlmMemoryProposalExtractor(async () => ({
+      ok: true,
+      text: JSON.stringify([
+        {
+          kind: "preference",
+          content: "Alice prefers terse status updates.",
+          tags: ["style"],
+        },
+      ]),
+    })),
+  });
+
+  const result = await runtime.captureTurn({
+    userMessage: "For future updates, keep it terse.",
+  });
+
+  assert.equal(result.stored.length, 1);
+  assert.equal(result.stored[0]!.content, "Alice prefers terse status updates.");
 });

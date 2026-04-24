@@ -1,4 +1,4 @@
-export type MemoryScopeType = "agent" | "session" | "user" | "task" | "document";
+export type MemoryScopeType = "agent" | "session" | "user" | "task" | "document" | "project" | "repo";
 
 export type MemoryScope = {
   type: MemoryScopeType;
@@ -58,6 +58,7 @@ export type MemorySearchHit = {
     recency: number;
     importance: number;
     scope: number;
+    entity?: number;
   };
   snippet: string;
 };
@@ -77,6 +78,7 @@ export type MemoryRecallResult = {
     task?: string;
     palace?: string;
     retrieval?: string;
+    graph?: string;
   };
 };
 

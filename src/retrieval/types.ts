@@ -1,5 +1,6 @@
 import type { MemoryRecord, MemoryScope, MemorySearchHit } from "../core/types.js";
 import type { MemoryEmbeddingProviderConfig, MemoryQmdConfig, MemoryRetrievalBackend } from "../system/types.js";
+import type { VectorStore } from "./vector-store.js";
 
 export type RetrievalHit = {
   source: "builtin" | "qmd";
@@ -34,4 +35,5 @@ export type RetrievalManagerOptions = {
   embeddings?: MemoryEmbeddingProviderConfig;
   qmd?: MemoryQmdConfig;
   embeddingProvider?: MemoryEmbeddingProvider;
+  vectorStore?: VectorStore;
 };

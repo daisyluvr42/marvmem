@@ -1,9 +1,12 @@
 import { type MarvMem } from "../core/memory.js";
 import type { MemoryInput, MemoryRecord, MemoryScope } from "../core/types.js";
+import type { MemoryInferencer } from "../system/types.js";
 import type { TaskContextEntry } from "../task/types.js";
 import type {
   CapturedMemoryProposal,
   MemoryCaptureResult,
+  MemoryProposalExtractor,
+  MemoryProposalExtractorInput,
   MemoryRuntime,
   MemoryRuntimeOptions,
   MemoryTurnInput,
@@ -13,6 +16,7 @@ export function createMemoryRuntime(params: {
   memory: MarvMem;
   defaultScopes?: MemoryScope[];
   maxRecallChars?: number;
+  proposalExtractor?: MemoryProposalExtractor;
 }): MemoryRuntime {
   const options: MemoryRuntimeOptions = {
     defaultScopes: params.defaultScopes,
@@ -65,12 +69,13 @@ export function createMemoryRuntime(params: {
           task: taskWindow?.injectedContext || undefined,
           retrieval: retrievalLayer,
           palace: palaceLayer || undefined,
+          graph: palaceRecall.layers?.graph,
         },
       };
     },
 
     async captureTurn(turn: MemoryTurnInput): Promise<MemoryCaptureResult> {
-      const proposals = inferMemoryProposals(turn);
+      const proposals = turn.proposals ?? await extractMemoryProposals(params.proposalExtractor, turn);
       const scopes = resolveScopes(turn.scopes, options.defaultScopes);
       const taskEntries: TaskContextEntry[] = [];
       if (turn.taskId && scopes[0]) {
@@ -251,6 +256,42 @@ export function inferMemoryProposals(turn: MemoryTurnInput): CapturedMemoryPropo
   return dedupeProposals(proposals);
 }
 
+const MEMORY_EXTRACTION_SYSTEM_PROMPT =
+  "Extract durable memory candidates from this turn. Return JSON array only. " +
+  "Each item should have kind, content, optional summary, confidence, importance, source, tags, metadata. " +
+  "Use kinds like fact, preference, decision, identity, experience. Skip transient chat and guesses.";
+
+export class LlmMemoryProposalExtractor implements MemoryProposalExtractor {
+  constructor(private readonly inferencer: MemoryInferencer) {}
+
+  async extract(input: MemoryProposalExtractorInput): Promise<CapturedMemoryProposal[]> {
+    const fallback = inferMemoryProposals(input);
+    const result = await this.inferencer({
+      kind: "memory_extraction",
+      system: MEMORY_EXTRACTION_SYSTEM_PROMPT,
+      prompt: [
+        `User: ${input.userMessage}`,
+        input.assistantMessage ? `Assistant: ${input.assistantMessage}` : "",
+        input.recentMessages?.length ? `Recent:\n${input.recentMessages.join("\n")}` : "",
+        input.toolContext ? `Tool context:\n${input.toolContext}` : "",
+      ].filter(Boolean).join("\n\n"),
+      maxChars: 2000,
+    });
+    if (!result.ok) {
+      return fallback;
+    }
+    const parsed = parseProposalArray(result.text);
+    return parsed.length > 0 ? dedupeProposals(parsed) : fallback;
+  }
+}
+
+async function extractMemoryProposals(
+  extractor: MemoryProposalExtractor | undefined,
+  turn: MemoryTurnInput,
+): Promise<CapturedMemoryProposal[]> {
+  return extractor ? extractor.extract(turn) : inferMemoryProposals(turn);
+}
+
 function stripLeadingCue(value: string, pattern: RegExp): string | null {
   const stripped = value.replace(pattern, "").trim();
   return stripped && stripped !== value ? stripped : null;
@@ -296,4 +337,45 @@ function dedupeProposals(proposals: CapturedMemoryProposal[]): CapturedMemoryPro
     deduped.push(proposal);
   }
   return deduped;
+}
+
+function parseProposalArray(text: string): CapturedMemoryProposal[] {
+  try {
+    const parsed = JSON.parse(extractJsonArray(text)) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      .map((item): CapturedMemoryProposal | null => {
+        const content = typeof item.content === "string" ? item.content.trim() : "";
+        const kind = typeof item.kind === "string" && item.kind.trim() ? item.kind.trim() : "note";
+        if (!content) {
+          return null;
+        }
+        const proposal: CapturedMemoryProposal = {
+          kind,
+          content,
+          summary: typeof item.summary === "string" ? item.summary.trim() : content,
+          confidence: typeof item.confidence === "number" ? item.confidence : 0.75,
+          importance: typeof item.importance === "number" ? item.importance : 0.65,
+          source: typeof item.source === "string" ? item.source : "llm_extraction",
+          tags: Array.isArray(item.tags) ? item.tags.filter((tag): tag is string => typeof tag === "string") : ["llm"],
+          metadata: item.metadata && typeof item.metadata === "object" && !Array.isArray(item.metadata)
+            ? item.metadata as Record<string, unknown>
+            : undefined,
+        };
+        return proposal;
+      })
+      .filter((proposal): proposal is CapturedMemoryProposal => proposal !== null);
+  } catch {
+    return [];
+  }
+}
+
+function extractJsonArray(text: string): string {
+  const codeBlock = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (codeBlock) return codeBlock[1]!.trim();
+  const array = text.match(/\[[\s\S]*\]/);
+  return array ? array[0] : text.trim();
 }

@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { ActiveMemoryManager } from "../active/manager.js";
 import { InMemoryActiveMemoryStore, SqliteActiveMemoryStore } from "../active/store.js";
+import type { EntityExtractor, EntityStore } from "../entity/types.js";
 import { MaintenanceManager } from "../maintenance/manager.js";
 import { RetrievalManager } from "../retrieval/manager.js";
+import type { VectorStore } from "../retrieval/vector-store.js";
 import { TaskContextManager } from "../task/manager.js";
 import { InMemoryTaskContextStore, SqliteTaskContextStore } from "../task/store.js";
 import type { MemoryInferencer, MemoryStorageBackend } from "../system/types.js";
 import { cosineSimilarity, embedTextHash } from "./hash-embedding.js";
+import type { MemoryEvaluator } from "./evaluator.js";
 import { InMemoryStore, SqliteMemoryStore } from "./storage.js";
 import {
   normalizeScope,
@@ -39,6 +42,8 @@ const DEFAULT_SEARCH_WEIGHTS: SearchWeights = {
   scope: 0.05,
 };
 
+const ENTITY_MATCH_BOOST = 0.18;
+
 export type MarvMemOptions = {
   storage?: {
     backend?: MemoryStorageBackend;
@@ -51,6 +56,7 @@ export type MarvMemOptions = {
   inferencer?: MemoryInferencer;
   retrieval?: {
     backend?: "builtin" | "qmd";
+    vectorStore?: VectorStore;
     embeddings?: {
       provider: "openai" | "gemini" | "voyage" | "script" | "auto";
       model?: string;
@@ -90,6 +96,12 @@ export type MarvMemOptions = {
   embeddingDimensions?: number;
   /** Similarity threshold (0-1) above which a new remember() merges into an existing record instead of creating a new one. Set to 1 to disable. Default 0.85. */
   dedupeThreshold?: number;
+  /** Pluggable memory evaluator for conflict resolution. When set, used instead of dedupeThreshold. */
+  evaluator?: MemoryEvaluator;
+  /** Optional entity store for lightweight entity linking. */
+  entityStore?: EntityStore;
+  /** Optional entity extractor. Requires entityStore to persist links. */
+  entityExtractor?: EntityExtractor;
   /** Override the default search scoring weights. */
   searchWeights?: Partial<SearchWeights>;
 };
@@ -100,11 +112,14 @@ export class MarvMem {
   private readonly now: () => Date;
   private readonly embeddingDimensions: number;
   private readonly dedupeThreshold: number;
+  private readonly evaluator: MemoryEvaluator | null;
   private readonly weights: SearchWeights;
   readonly active: ActiveMemoryManager;
   readonly task: TaskContextManager;
   readonly retrieval: RetrievalManager;
   readonly maintenance: MaintenanceManager;
+  readonly entityStore: EntityStore | null;
+  readonly entityExtractor: EntityExtractor | null;
 
   /** Serialize mutating operations to prevent read-modify-write races. */
   private mutationQueue: Promise<unknown> = Promise.resolve();
@@ -118,7 +133,10 @@ export class MarvMem {
     this.now = options.now ?? (() => new Date());
     this.embeddingDimensions = options.embeddingDimensions ?? 128;
     this.dedupeThreshold = clamp(options.dedupeThreshold ?? 0.85, 0, 1);
+    this.evaluator = options.evaluator ?? null;
     this.weights = { ...DEFAULT_SEARCH_WEIGHTS, ...options.searchWeights };
+    this.entityStore = options.entityStore ?? null;
+    this.entityExtractor = options.entityExtractor ?? null;
     this.active = new ActiveMemoryManager({
       store:
         storageBackend === "memory" || options.store instanceof InMemoryStore
@@ -143,6 +161,7 @@ export class MarvMem {
     this.retrieval = new RetrievalManager({
       memory: this,
       backend: options.retrieval?.backend,
+      vectorStore: options.retrieval?.vectorStore,
       embeddings: options.retrieval?.embeddings,
       qmd: options.retrieval?.qmd,
     });
@@ -159,8 +178,8 @@ export class MarvMem {
       const nowIso = this.now().toISOString();
       const records = await this.store.load();
 
-      // --- Deduplicate: merge into existing record if content is near-identical ---
-      if (this.dedupeThreshold < 1) {
+      // --- Evaluate: use evaluator or fallback to threshold-based dedup ---
+      if (this.evaluator || this.dedupeThreshold < 1) {
         const inputText = buildSearchText({
           kind: input.kind,
           content: input.content,
@@ -172,6 +191,8 @@ export class MarvMem {
         const inputTokens = uniqueTokens(inputText);
         const scopeK = scopeKey(normalizeScope(input.scope));
 
+        // Collect candidates with similarity scores
+        const candidates: Array<{ record: MemoryRecord; similarity: number }> = [];
         for (const existing of records) {
           if (scopeKey(existing.scope) !== scopeK) continue;
           if (existing.kind !== input.kind) continue;
@@ -181,29 +202,81 @@ export class MarvMem {
             cosineSimilarity(inputVector, embedTextHash(existingText, this.embeddingDimensions)),
           );
           const similarity = tokenScore * 0.5 + hashScore * 0.5;
-          if (similarity >= this.dedupeThreshold) {
-            // Merge: update the existing record
-            existing.content = input.content.trim();
-            existing.summary = input.summary?.trim() || summarizeContent(input.content);
-            existing.confidence = clamp(
-              Math.max(existing.confidence, input.confidence ?? 0.7),
-              0.05,
-              1,
-            );
-            existing.importance = clamp(
-              Math.max(existing.importance, input.importance ?? 0.5),
-              0,
-              1,
-            );
-            existing.tags = [
-              ...new Set([
-                ...existing.tags,
-                ...(input.tags ?? []).map((tag) => normalizeText(tag)).filter(Boolean),
-              ]),
-            ];
-            existing.updatedAt = nowIso;
-            await this.store.save(records);
-            return { ...existing, scope: { ...existing.scope }, tags: [...existing.tags] };
+          const candidateThreshold = this.evaluator ? 0.7 : this.dedupeThreshold * 0.7;
+          if (similarity >= candidateThreshold) {
+            candidates.push({ record: existing, similarity });
+          }
+        }
+
+        if (candidates.length > 0) {
+          // Sort by similarity descending
+          candidates.sort((a, b) => b.similarity - a.similarity);
+
+          if (this.evaluator) {
+            // Use evaluator for intelligent conflict resolution
+            const decision = await this.evaluator.evaluate({
+              incoming: { content: input.content, kind: input.kind, tags: input.tags ?? [] },
+              candidates: candidates.map((c) => ({
+                id: c.record.id,
+                content: c.record.content,
+                kind: c.record.kind,
+                similarity: c.similarity,
+              })),
+            });
+
+            if (decision.action === "ignore") {
+              // Return existing record unchanged
+              const best = candidates[0]!.record;
+              return { ...best, scope: { ...best.scope }, tags: [...best.tags] };
+            }
+
+            if (decision.action === "update") {
+              const target = records.find((r) => r.id === decision.targetId);
+              if (target) {
+                target.content = (decision.merged || input.content).trim();
+                target.summary = summarizeContent(target.content);
+                target.confidence = clamp(Math.max(target.confidence, input.confidence ?? 0.7), 0.05, 1);
+                target.importance = clamp(Math.max(target.importance, input.importance ?? 0.5), 0, 1);
+                target.tags = [...new Set([...target.tags, ...(input.tags ?? []).map((t) => normalizeText(t)).filter(Boolean)])];
+                target.updatedAt = nowIso;
+                await this.store.save(records);
+                await this.syncDerivedState(target);
+                return { ...target, scope: { ...target.scope }, tags: [...target.tags] };
+              }
+            }
+
+            if (decision.action === "contradict") {
+              const target = records.find((r) => r.id === decision.targetId);
+              if (target) {
+                const previousContent = target.content;
+                target.content = (decision.resolution || input.content).trim();
+                target.summary = summarizeContent(target.content);
+                target.confidence = clamp(input.confidence ?? 0.7, 0.05, 1);
+                target.importance = clamp(input.importance ?? 0.5, 0, 1);
+                target.tags = [...new Set([...target.tags, ...(input.tags ?? []).map((t) => normalizeText(t)).filter(Boolean)])];
+                target.updatedAt = nowIso;
+                target.metadata = { ...target.metadata, contradicted: true, previousContent };
+                await this.store.save(records);
+                await this.syncDerivedState(target);
+                return { ...target, scope: { ...target.scope }, tags: [...target.tags] };
+              }
+            }
+            // action === "add" falls through to create new record below
+          } else {
+            // Legacy threshold-based dedup (no evaluator)
+            const best = candidates[0]!;
+            if (best.similarity >= this.dedupeThreshold) {
+              const existing = best.record;
+              existing.content = input.content.trim();
+              existing.summary = input.summary?.trim() || summarizeContent(input.content);
+              existing.confidence = clamp(Math.max(existing.confidence, input.confidence ?? 0.7), 0.05, 1);
+              existing.importance = clamp(Math.max(existing.importance, input.importance ?? 0.5), 0, 1);
+              existing.tags = [...new Set([...existing.tags, ...(input.tags ?? []).map((tag) => normalizeText(tag)).filter(Boolean)])];
+              existing.updatedAt = nowIso;
+              await this.store.save(records);
+              await this.syncDerivedState(existing);
+              return { ...existing, scope: { ...existing.scope }, tags: [...existing.tags] };
+            }
           }
         }
       }
@@ -225,6 +298,7 @@ export class MarvMem {
       };
       records.push(record);
       await this.store.save(records);
+      await this.syncDerivedState(record);
       return record;
     });
   }
@@ -252,6 +326,7 @@ export class MarvMem {
       record.updatedAt = nowIso;
 
       await this.store.save(records);
+      await this.syncDerivedState(record);
       return { ...record, scope: { ...record.scope }, tags: [...record.tags] };
     });
   }
@@ -263,6 +338,8 @@ export class MarvMem {
       if (index === -1) return false;
       records.splice(index, 1);
       await this.store.save(records);
+      await this.retrieval.deleteVector(id);
+      await this.clearEntityLinks(id);
       return true;
     });
   }
@@ -293,6 +370,7 @@ export class MarvMem {
     const queryVector = embedTextHash(normalizedQuery, this.embeddingDimensions);
     const records = await this.store.load();
     const scopedRecords = records.filter((record) => matchesRequestedScopes(record.scope, options.scopes));
+    const entityMatchedIds = await this.resolveEntityMemoryIds(normalizedQuery);
     const hits: MemorySearchHit[] = [];
     const w = this.weights;
 
@@ -305,17 +383,24 @@ export class MarvMem {
         0,
         1,
       );
+      const entity = entityMatchedIds.has(record.id) ? 1 : 0;
       const recency = computeRecencyBoost(record.updatedAt, this.now());
       const importance = record.importance;
       const scope = resolveScopeWeight(record.scope, options.scopes);
-      const score = lexical * w.lexical + hash * w.hash + recency * w.recency + importance * w.importance + scope * w.scope;
+      const score =
+        lexical * w.lexical +
+        hash * w.hash +
+        recency * w.recency +
+        importance * w.importance +
+        scope * w.scope +
+        entity * ENTITY_MATCH_BOOST;
       if (score < (options.minScore ?? 0.18)) {
         continue;
       }
       hits.push({
         record,
         score,
-        reasons: { lexical, hash, recency, importance, scope },
+        reasons: { lexical, hash, recency, importance, scope, entity },
         snippet: buildSnippet(record.content, queryTokens),
       });
     }
@@ -328,11 +413,15 @@ export class MarvMem {
   async recall(options: MemoryRecallOptions): Promise<MemoryRecallResult> {
     const query = buildRecallQuery(options.query, options.recentMessages);
     const hits = await this.search(query, options);
-    const injectedContext = formatRecallContext(hits, options.maxChars ?? 4_000);
+    const graphContext = await this.formatEntityGraphContext(query, hits);
+    const injectedContext = [formatRecallContext(hits, options.maxChars ?? 4_000), graphContext]
+      .filter(Boolean)
+      .join("\n\n");
     return {
       query,
       hits,
       injectedContext,
+      layers: graphContext ? { graph: graphContext } : undefined,
     };
   }
 
@@ -341,6 +430,169 @@ export class MarvMem {
     const next = this.mutationQueue.then(fn, fn);
     this.mutationQueue = next.then(() => {}, () => {});
     return next;
+  }
+
+  private async syncDerivedState(record: MemoryRecord): Promise<void> {
+    await this.retrieval.indexRecord(record);
+    await this.syncEntitiesForRecord(record);
+  }
+
+  private async syncEntitiesForRecord(record: MemoryRecord): Promise<void> {
+    if (!this.entityStore || !this.entityExtractor) {
+      return;
+    }
+
+    await this.clearEntityLinks(record.id);
+    const text = [record.summary ?? "", record.content].filter(Boolean).join("\n");
+    if (!text.trim()) {
+      return;
+    }
+
+    const extracted = await this.entityExtractor.extract(text);
+    const storedEntities = [];
+    for (const entity of extracted) {
+      const stored = await this.entityStore.upsertEntity({
+        name: entity.name,
+        aliases: entity.aliases,
+        kind: entity.kind,
+      });
+      storedEntities.push(stored);
+      await this.entityStore.link(stored.id, record.id, "mentions");
+    }
+    for (let i = 0; i < storedEntities.length; i++) {
+      for (let j = i + 1; j < storedEntities.length; j++) {
+        await this.entityStore.relate({
+          sourceEntityId: storedEntities[i]!.id,
+          targetEntityId: storedEntities[j]!.id,
+          relation: "co_occurs",
+          memoryId: record.id,
+          confidence: 0.5,
+        });
+      }
+    }
+  }
+
+  private async clearEntityLinks(memoryId: string): Promise<void> {
+    if (!this.entityStore) {
+      return;
+    }
+    await this.entityStore.clearRelationsForMemory(memoryId);
+    const links = await this.entityStore.getLinkedEntities(memoryId);
+    for (const link of links) {
+      await this.entityStore.unlink(link.entityId, memoryId);
+    }
+  }
+
+  private async resolveEntityMemoryIds(query: string): Promise<Set<string>> {
+    const entityIds = await this.resolveEntityIds(query);
+    const memoryIds = new Set<string>();
+    for (const entityId of entityIds) {
+      const links = await this.entityStore!.getLinkedMemories(entityId);
+      for (const link of links) {
+        memoryIds.add(link.memoryId);
+      }
+    }
+    return memoryIds;
+  }
+
+  private async resolveEntityIds(query: string): Promise<Set<string>> {
+    if (!this.entityStore) {
+      return new Set();
+    }
+
+    const entityIds = new Set<string>();
+    const trimmed = query.trim();
+    if (!trimmed) {
+      return new Set();
+    }
+
+    const directMatches = await Promise.all([
+      this.entityStore.findByName(trimmed),
+      this.entityStore.findByAlias(trimmed),
+      this.entityStore.searchEntities(trimmed, { limit: 8 }),
+    ]);
+    const extracted = this.entityExtractor ? await this.entityExtractor.extract(trimmed) : [];
+
+    for (const match of directMatches[0] ? [directMatches[0]] : []) {
+      entityIds.add(match.id);
+    }
+    for (const match of directMatches[1] ? [directMatches[1]] : []) {
+      entityIds.add(match.id);
+    }
+    for (const entity of directMatches[2]) {
+      entityIds.add(entity.id);
+    }
+
+    for (const entity of extracted) {
+      const matched = await this.entityStore.findByName(entity.name);
+      if (matched) {
+        entityIds.add(matched.id);
+      }
+      for (const alias of entity.aliases ?? []) {
+        const aliasMatch = await this.entityStore.findByAlias(alias);
+        if (aliasMatch) {
+          entityIds.add(aliasMatch.id);
+        }
+      }
+    }
+
+    return entityIds;
+  }
+
+  private async formatEntityGraphContext(query: string, hits: MemorySearchHit[]): Promise<string> {
+    if (!this.entityStore) {
+      return "";
+    }
+
+    const entityIds = await this.resolveEntityIds(query);
+    for (const hit of hits.slice(0, 5)) {
+      const links = await this.entityStore.getLinkedEntities(hit.record.id);
+      for (const link of links) {
+        entityIds.add(link.entityId);
+      }
+    }
+    if (entityIds.size === 0) {
+      return "";
+    }
+
+    const names = new Map<string, string>();
+    for (const id of entityIds) {
+      const entity = await this.entityStore.getEntity(id);
+      if (entity) {
+        names.set(id, entity.name);
+      }
+    }
+
+    const lines: string[] = [];
+    const seenRelations = new Set<string>();
+    for (const id of entityIds) {
+      const relations = await this.entityStore.getRelationsForEntity(id, { limit: 4 });
+      for (const relation of relations) {
+        const source = names.get(relation.sourceEntityId) ?? (await this.entityStore.getEntity(relation.sourceEntityId))?.name;
+        const target = names.get(relation.targetEntityId) ?? (await this.entityStore.getEntity(relation.targetEntityId))?.name;
+        if (!source || !target) {
+          continue;
+        }
+        const key = `${relation.sourceEntityId}:${relation.targetEntityId}:${relation.relation}:${relation.memoryId ?? ""}`;
+        if (seenRelations.has(key)) {
+          continue;
+        }
+        seenRelations.add(key);
+        lines.push(`- ${source} ${relation.relation} ${target}`);
+        if (lines.length >= 8) {
+          break;
+        }
+      }
+      if (lines.length >= 8) {
+        break;
+      }
+    }
+
+    if (lines.length > 0) {
+      return `Related entity graph:\n${lines.join("\n")}`;
+    }
+    const entityList = [...names.values()].slice(0, 8);
+    return entityList.length > 0 ? `Related entities:\n${entityList.map((name) => `- ${name}`).join("\n")}` : "";
   }
 }
 

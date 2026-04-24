@@ -707,6 +707,15 @@ marvmem/runtime      — Lifecycle runtime
 marvmem/mcp          — MCP handler + stdio server helpers
 marvmem/adapters     — Agent framework adapters
 marvmem/system       — Types + SQLite utilities
+marvmem/cloud        — Plan gates, usage, cloud sync helpers
+marvmem/platform     — Project-aware memory service
+marvmem/http         — Local HTTP API server
+marvmem/auth         — Project API key helpers
+marvmem/entity       — Entity extraction and lightweight graph storage
+marvmem/inspect      — Inspect events and webhook dispatch
+marvmem/bridge       — Markdown projection bridge adapters
+marvmem/products/coding   — Coding-agent product surface
+marvmem/products/runtime  — Runtime product surface
 ```
 
 ## Current Boundaries
