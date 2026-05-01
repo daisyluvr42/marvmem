@@ -584,6 +584,8 @@ node dist/bin/marvmem-agent.js install copilot \
 | 命令 | 用途 |
 |------|------|
 | `marvmem-agent install <agent\|all>` | 写入 MCP 配置、导入历史 session、写入全局指令 |
+| `marvmem-agent service <cmd>` | 安装、启动、停止、查询本地常驻控制台服务 |
+| `marvmem-agent serve` | LaunchAgent 使用的长跑 HTTP console 入口 |
 | `marvmem-agent ui` | 启动本地 Web 控制台 |
 | `marvmem-agent tui` | 启动终端控制台 |
 
@@ -600,13 +602,54 @@ node dist/bin/marvmem-agent.js install copilot \
 | `--skip-mcp` | `install` | 不写 MCP 配置 |
 | `--skip-import` | `install` | 不导入历史 session |
 | `--skip-instructions` | `install` | 不写全局指令 |
+| `--skip-service` | `install all` | 不安装本地常驻 console 服务 |
+| `--no-service-start` | `install all` | 写入 LaunchAgent 但不立刻启动 |
 | `--port <number>` | `ui` | 指定 Web 控制台端口 |
 | `--host <host>` | `ui` | 指定 Web 控制台监听地址 |
 | `--once` | `tui` | 只打印一次状态并退出 |
 
+### 本地常驻 agent service
+
+`marvmem-agent install all` 默认会确保本地控制台服务存在。服务配置保存在：
+
+```text
+~/.marvmem/agent-service.json
+```
+
+macOS 上会写入用户级 LaunchAgent：
+
+```text
+~/Library/LaunchAgents/com.marvmem.agent.plist
+```
+
+它运行 `marvmem-agent serve`，使用同一个 `~/.marvmem/memory.sqlite` 和一枚稳定的本地 API key。这样重启机器后 console URL 不会因为临时进程退出而失效。
+
+常用命令：
+
+```bash
+node dist/bin/marvmem-agent.js service install
+node dist/bin/marvmem-agent.js service status
+node dist/bin/marvmem-agent.js service url
+node dist/bin/marvmem-agent.js service restart
+node dist/bin/marvmem-agent.js service stop
+node dist/bin/marvmem-agent.js service uninstall
+```
+
+安装但不立刻启动：
+
+```bash
+node dist/bin/marvmem-agent.js service install --no-start
+```
+
+指定端口：
+
+```bash
+node dist/bin/marvmem-agent.js service install --port 3379
+```
+
 ### 本地 agent 设置 UI
 
-安装 MarvMem 之后，也可以启动本地控制台来探测和统一配置这些 agent：
+安装 MarvMem 之后，也可以启动一次性的本地控制台来探测和统一配置这些 agent：
 
 ```bash
 npm run build

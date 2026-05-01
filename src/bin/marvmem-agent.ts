@@ -21,6 +21,17 @@ import { InMemoryInspectEventStore } from "../inspect/store.js";
 import { defaultMemoryMcpStoragePath } from "../mcp/stdio.js";
 import { MarvMemPlatformService } from "../platform/service.js";
 import { ProjectStore } from "../auth/project.js";
+import {
+  ensureAgentServiceConfig,
+  getAgentServiceStatus,
+  installAgentService,
+  projectFromAgentServiceConfig,
+  serviceUrl,
+  startAgentService,
+  stopAgentService,
+  uninstallAgentService,
+  type AgentServiceOptions,
+} from "../agents/service.js";
 
 const HELP = `marvmem-agent
 
@@ -28,6 +39,8 @@ Install MarvMem globally for coding agents, or launch the local setup UI.
 
 Usage:
   marvmem-agent install <codex|claude|cursor|copilot|antigravity|all>
+  marvmem-agent service <install|start|stop|restart|status|uninstall|url>
+  marvmem-agent serve
   marvmem-agent ui
   marvmem-agent tui
 
@@ -39,9 +52,12 @@ Options:
   --skip-mcp             Do not install MCP configuration
   --skip-import          Do not import existing sessions
   --skip-instructions    Do not update agent instruction files
+  --skip-service         Do not install the local LaunchAgent service (install all only)
+  --no-service-start     Write the LaunchAgent but do not start it
   --once                 Print TUI status once and exit (tui only)
   --port <number>        UI server port (ui only, default: 3377)
   --host <host>          UI server host (ui only, default: 127.0.0.1)
+  --config <path>        Service config path (serve only)
   --help                 Show this message
 `;
 
@@ -53,12 +69,23 @@ async function main(): Promise<void> {
   }
 
   if (argv[0] === "install") {
-    const { agents, options } = parseInstallArgs(argv.slice(1));
+    const { agents, options, serviceOptions, skipService } = parseInstallArgs(argv.slice(1));
     const results = [];
     for (const agent of agents) {
       results.push(await installAgent(agent, options));
     }
-    process.stdout.write(`${JSON.stringify({ storagePath: options.storagePath, results }, null, 2)}\n`);
+    const service = agents.length === AGENT_IDS.length && !skipService ? await installAgentService(serviceOptions) : undefined;
+    process.stdout.write(`${JSON.stringify({ storagePath: options.storagePath, service, results }, null, 2)}\n`);
+    return;
+  }
+
+  if (argv[0] === "service") {
+    await runService(parseServiceArgs(argv.slice(1)));
+    return;
+  }
+
+  if (argv[0] === "serve") {
+    await runServe(parseServeArgs(argv.slice(1)));
     return;
   }
 
@@ -72,7 +99,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  throw new Error("Expected command: install, ui, or tui");
+  throw new Error("Expected command: install, service, serve, ui, or tui");
 }
 
 function parseInstallArgs(argv: string[]) {
@@ -82,11 +109,22 @@ function parseInstallArgs(argv: string[]) {
   }
 
   const agents = parseAgentTarget(target);
-  const options = resolveAgentOptions(parseSharedAgentOptions(argv, 1));
+  const parsed = parseSharedAgentOptions(argv, 1);
+  const options = resolveAgentOptions(parsed.agentOptions);
   if (options.sessionsRoot && agents.length !== 1) {
     throw new Error("--sessions-root can only be used with a single agent");
   }
-  return { agents, options };
+  return {
+    agents,
+    options,
+    serviceOptions: {
+      ...options,
+      host: parsed.serviceOptions.host,
+      port: parsed.serviceOptions.port,
+      start: parsed.serviceOptions.start,
+    },
+    skipService: parsed.skipService,
+  };
 }
 
 function parseUiArgs(argv: string[]) {
@@ -165,37 +203,61 @@ function parseTuiArgs(argv: string[]) {
 function parseSharedAgentOptions(
   argv: string[],
   startIndex: number,
-): AgentInstallOptions {
-  const options: AgentInstallOptions = {};
+): { agentOptions: AgentInstallOptions; serviceOptions: AgentServiceOptions; skipService: boolean } {
+  const agentOptions: AgentInstallOptions = {};
+  const serviceOptions: AgentServiceOptions = {};
+  let skipService = false;
 
   for (let index = startIndex; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--storage-path") {
-      options.storagePath = readFlagValue(argv, ++index, arg);
+      const value = readFlagValue(argv, ++index, arg);
+      agentOptions.storagePath = value;
+      serviceOptions.storagePath = value;
       continue;
     }
     if (arg === "--mcp-path") {
-      options.mcpPath = readFlagValue(argv, ++index, arg);
+      const value = readFlagValue(argv, ++index, arg);
+      agentOptions.mcpPath = value;
+      serviceOptions.mcpPath = value;
       continue;
     }
     if (arg === "--sessions-root") {
-      options.sessionsRoot = readFlagValue(argv, ++index, arg);
+      agentOptions.sessionsRoot = readFlagValue(argv, ++index, arg);
       continue;
     }
     if (arg === "--home") {
-      options.home = readFlagValue(argv, ++index, arg);
+      const value = readFlagValue(argv, ++index, arg);
+      agentOptions.home = value;
+      serviceOptions.home = value;
       continue;
     }
     if (arg === "--skip-mcp") {
-      options.skipMcp = true;
+      agentOptions.skipMcp = true;
       continue;
     }
     if (arg === "--skip-import") {
-      options.skipImport = true;
+      agentOptions.skipImport = true;
       continue;
     }
     if (arg === "--skip-instructions") {
-      options.skipInstructions = true;
+      agentOptions.skipInstructions = true;
+      continue;
+    }
+    if (arg === "--skip-service") {
+      skipService = true;
+      continue;
+    }
+    if (arg === "--no-service-start") {
+      serviceOptions.start = false;
+      continue;
+    }
+    if (arg === "--service-port") {
+      serviceOptions.port = Number.parseInt(readFlagValue(argv, ++index, arg), 10);
+      continue;
+    }
+    if (arg === "--service-host") {
+      serviceOptions.host = readFlagValue(argv, ++index, arg);
       continue;
     }
     if (arg === "--help") {
@@ -205,7 +267,73 @@ function parseSharedAgentOptions(
     throw new Error(`Unknown argument: ${arg}`);
   }
 
+  return { agentOptions, serviceOptions, skipService };
+}
+
+function parseServeArgs(argv: string[]): AgentServiceOptions {
+  const options: AgentServiceOptions = { start: false };
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--config") {
+      options.configPath = readFlagValue(argv, ++index, arg);
+      continue;
+    }
+    if (arg === "--home") {
+      options.home = readFlagValue(argv, ++index, arg);
+      continue;
+    }
+    if (arg === "--help") {
+      process.stdout.write(`${HELP}\n`);
+      process.exit(0);
+    }
+    throw new Error(`Unknown argument: ${arg}`);
+  }
   return options;
+}
+
+function parseServiceArgs(argv: string[]) {
+  const command = argv[0];
+  if (!command) {
+    throw new Error("Missing service command");
+  }
+  const options: AgentServiceOptions = {};
+  for (let index = 1; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--storage-path") {
+      options.storagePath = readFlagValue(argv, ++index, arg);
+      continue;
+    }
+    if (arg === "--mcp-path") {
+      options.mcpPath = readFlagValue(argv, ++index, arg);
+      continue;
+    }
+    if (arg === "--home") {
+      options.home = readFlagValue(argv, ++index, arg);
+      continue;
+    }
+    if (arg === "--host") {
+      options.host = readFlagValue(argv, ++index, arg);
+      continue;
+    }
+    if (arg === "--port") {
+      options.port = Number.parseInt(readFlagValue(argv, ++index, arg), 10);
+      continue;
+    }
+    if (arg === "--config") {
+      options.configPath = readFlagValue(argv, ++index, arg);
+      continue;
+    }
+    if (arg === "--no-start") {
+      options.start = false;
+      continue;
+    }
+    if (arg === "--help") {
+      process.stdout.write(`${HELP}\n`);
+      process.exit(0);
+    }
+    throw new Error(`Unknown argument: ${arg}`);
+  }
+  return { command, options };
 }
 
 async function runUi(input: {
@@ -250,6 +378,84 @@ async function runUi(input: {
       "",
     ].join("\n"),
   );
+}
+
+async function runServe(input: AgentServiceOptions): Promise<void> {
+  const config = await ensureAgentServiceConfig(input);
+  const memory = createMarvMem({
+    storage: {
+      backend: "sqlite",
+      path: config.storagePath,
+    },
+  });
+  const events = new InMemoryInspectEventStore();
+  const platform = new MarvMemPlatformService({ memory, events });
+  const projects = new ProjectStore();
+  projects.register(projectFromAgentServiceConfig(config));
+  const server = createMarvMemServer({
+    platform,
+    projects,
+    events,
+    port: config.port,
+    host: config.host,
+    consolePath: defaultConsolePath(),
+    agents: {
+      home: input.home,
+      storagePath: config.storagePath,
+      mcpPath: config.mcpPath,
+    },
+  });
+
+  await server.listen();
+  process.stdout.write(
+    [
+      "MarvMem agent service",
+      `Console: ${serviceUrl(config)}`,
+      `Storage: ${config.storagePath}`,
+      `MCP Path: ${config.mcpPath}`,
+      "",
+    ].join("\n"),
+  );
+}
+
+async function runService(input: { command: string; options: AgentServiceOptions }): Promise<void> {
+  if (input.command === "install") {
+    const result = await installAgentService(input.options);
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  if (input.command === "start") {
+    await installAgentService({ ...input.options, start: false });
+    await startAgentService(input.options);
+    process.stdout.write(`${JSON.stringify(await getAgentServiceStatus(input.options), null, 2)}\n`);
+    return;
+  }
+  if (input.command === "stop") {
+    await stopAgentService(input.options);
+    process.stdout.write(`${JSON.stringify(await getAgentServiceStatus(input.options), null, 2)}\n`);
+    return;
+  }
+  if (input.command === "restart") {
+    await stopAgentService(input.options);
+    const result = await installAgentService(input.options);
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  if (input.command === "status") {
+    process.stdout.write(`${JSON.stringify(await getAgentServiceStatus(input.options), null, 2)}\n`);
+    return;
+  }
+  if (input.command === "uninstall") {
+    await uninstallAgentService(input.options);
+    process.stdout.write(`${JSON.stringify(await getAgentServiceStatus(input.options), null, 2)}\n`);
+    return;
+  }
+  if (input.command === "url") {
+    const config = await ensureAgentServiceConfig({ ...input.options, start: false });
+    process.stdout.write(`${serviceUrl(config)}\n`);
+    return;
+  }
+  throw new Error(`Unknown service command: ${input.command}`);
 }
 
 async function runTui(input: {

@@ -10,6 +10,11 @@ export class ProjectStore {
   private readonly projects = new Map<string, Project>();
   private readonly keyIndex = new Map<string, string>(); // hash → projectId
 
+  register(project: Project): void {
+    this.projects.set(project.id, project);
+    this.keyIndex.set(project.apiKeyHash, project.id);
+  }
+
   /**
    * Create a new project. Returns the project and the raw API key
    * (which must be shown to the user once, then never stored in plaintext).

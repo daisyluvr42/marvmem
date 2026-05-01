@@ -97,7 +97,7 @@ Install MarvMem globally into supported coding agents:
 node dist/bin/marvmem-agent.js install all
 ```
 
-This writes agent MCP config, imports existing local sessions, and adds global memory-use instructions where the host supports an instruction file. All supported agents point at the same default SQLite store:
+This writes agent MCP config, imports existing local sessions, adds global memory-use instructions where the host supports an instruction file, and installs a user-level local service for the browser console. All supported agents point at the same default SQLite store:
 
 ```text
 ~/.marvmem/memory.sqlite
@@ -113,6 +113,14 @@ Start the browser setup console:
 
 ```bash
 node dist/bin/marvmem-agent.js ui
+```
+
+Manage the persistent local console service:
+
+```bash
+node dist/bin/marvmem-agent.js service install
+node dist/bin/marvmem-agent.js service status
+node dist/bin/marvmem-agent.js service url
 ```
 
 Start the terminal setup UI:
@@ -191,4 +199,3 @@ marvmem/products/runtime
 ## License / 许可
 
 Private.
-

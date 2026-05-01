@@ -103,6 +103,81 @@ test("agent TUI once mode prints setup status", async () => {
   }
 });
 
+test("agent service install writes stable config and LaunchAgent plist without starting", async () => {
+  const root = await mkdtemp(join(tmpdir(), "marvmem-agent-service-"));
+  const storagePath = join(root, "memory.sqlite");
+  const mcpPath = join(root, "marvmem-mcp.js");
+
+  try {
+    const output = await execFileAsync(process.execPath, [
+      "--import",
+      "tsx",
+      join(process.cwd(), "src/bin/marvmem-agent.ts"),
+      "service",
+      "install",
+      "--home",
+      root,
+      "--storage-path",
+      storagePath,
+      "--mcp-path",
+      mcpPath,
+      "--port",
+      "3391",
+      "--no-start",
+    ]);
+    const parsed = JSON.parse(output);
+    assert.match(parsed.url, /^http:\/\/127\.0\.0\.1:3391\/console\?apiKey=mm_/);
+    assert.equal(parsed.started, false);
+
+    const config = JSON.parse(await readFile(join(root, ".marvmem", "agent-service.json"), "utf8"));
+    assert.equal(config.storagePath, storagePath);
+    assert.equal(config.mcpPath, mcpPath);
+    assert.equal(config.port, 3391);
+    assert.match(config.apiKey, /^mm_/);
+
+    const plist = await readFile(join(root, "Library", "LaunchAgents", "com.marvmem.agent.plist"), "utf8");
+    assert.match(plist, /<string>serve<\/string>/);
+    assert.match(plist, /<key>RunAtLoad<\/key>/);
+    assert.match(plist, new RegExp(escapeRegExp(join(root, ".marvmem", "agent-service.json"))));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("install all can create the local service without invoking launchctl", async () => {
+  const root = await mkdtemp(join(tmpdir(), "marvmem-agent-install-all-"));
+  const storagePath = join(root, "memory.sqlite");
+  const mcpPath = join(root, "marvmem-mcp.js");
+
+  try {
+    const output = await execFileAsync(process.execPath, [
+      "--import",
+      "tsx",
+      join(process.cwd(), "src/bin/marvmem-agent.ts"),
+      "install",
+      "all",
+      "--home",
+      root,
+      "--storage-path",
+      storagePath,
+      "--mcp-path",
+      mcpPath,
+      "--skip-mcp",
+      "--skip-import",
+      "--skip-instructions",
+      "--no-service-start",
+      "--service-port",
+      "3392",
+    ]);
+    const parsed = JSON.parse(output);
+    assert.equal(parsed.results.length, 5);
+    assert.equal(parsed.service.started, false);
+    assert.match(parsed.service.url, /^http:\/\/127\.0\.0\.1:3392\/console\?apiKey=mm_/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 async function runInstaller(
   agent: string,
   home: string,
