@@ -21,7 +21,13 @@
     "sqlite"
   ],
   "bin": {
+    "marvmem-agent": "./dist/bin/marvmem-agent.js",
     "marvmem-mcp": "./dist/bin/marvmem-mcp.js",
+    "marvmem-codex-import": "./dist/bin/marvmem-codex-import.js",
+    "marvmem-claude-import": "./dist/bin/marvmem-claude-import.js",
+    "marvmem-antigravity-import": "./dist/bin/marvmem-antigravity-import.js",
+    "marvmem-copilot-import": "./dist/bin/marvmem-copilot-import.js",
+    "marvmem-cursor-import": "./dist/bin/marvmem-cursor-import.js",
     "marvmem-hermes": "./dist/bin/marvmem-hermes.js",
     "marvmem-openclaw": "./dist/bin/marvmem-openclaw.js"
   },
@@ -118,7 +124,9 @@
   "files": [
     "dist",
     "README.md",
-    "docs/USAGE.md"
+    "docs/USAGE.md",
+    "docs/ARCHITECTURE.md",
+    "docs/API.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && mkdir -p dist/console dist/cloud && cp src/console/index.html dist/console/index.html && cp src/cloud/schema.sql dist/cloud/schema.sql",

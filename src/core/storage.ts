@@ -104,6 +104,68 @@ export class SqliteMemoryStore implements MemoryStore {
       throw error;
     }
   }
+
+  async upsert(record: MemoryRecord): Promise<void> {
+    using db = openSqliteDatabase(this.filePath);
+    db.exec("BEGIN");
+    try {
+      db
+        .prepare(
+          "INSERT INTO memory_items (" +
+            "id, scope_type, scope_id, scope_weight, kind, content, summary, confidence, importance, source, tags_json, metadata_json, created_at, updated_at" +
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+            "ON CONFLICT(id) DO UPDATE SET " +
+            "scope_type = excluded.scope_type, scope_id = excluded.scope_id, scope_weight = excluded.scope_weight, " +
+            "kind = excluded.kind, content = excluded.content, summary = excluded.summary, " +
+            "confidence = excluded.confidence, importance = excluded.importance, source = excluded.source, " +
+            "tags_json = excluded.tags_json, metadata_json = excluded.metadata_json, updated_at = excluded.updated_at",
+        )
+        .run(
+          record.id,
+          record.scope.type,
+          record.scope.id,
+          record.scope.weight ?? null,
+          record.kind,
+          record.content,
+          record.summary ?? null,
+          record.confidence,
+          record.importance,
+          record.source,
+          JSON.stringify(record.tags),
+          record.metadata ? JSON.stringify(record.metadata) : null,
+          record.createdAt,
+          record.updatedAt,
+        );
+      db.prepare("DELETE FROM memory_items_fts WHERE id = ?").run(record.id);
+      db
+        .prepare("INSERT INTO memory_items_fts (id, kind, content, summary, tags, scope) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(
+          record.id,
+          record.kind,
+          record.content,
+          record.summary ?? "",
+          record.tags.join(" "),
+          `${record.scope.type}:${record.scope.id}`,
+        );
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  async delete(id: string): Promise<void> {
+    using db = openSqliteDatabase(this.filePath);
+    db.exec("BEGIN");
+    try {
+      db.prepare("DELETE FROM memory_items_fts WHERE id = ?").run(id);
+      db.prepare("DELETE FROM memory_items WHERE id = ?").run(id);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
 }
 
 export class InMemoryStore implements MemoryStore {
@@ -115,5 +177,19 @@ export class InMemoryStore implements MemoryStore {
 
   async save(records: MemoryRecord[]): Promise<void> {
     this.records = cloneRecords(records);
+  }
+
+  async upsert(record: MemoryRecord): Promise<void> {
+    const index = this.records.findIndex((entry) => entry.id === record.id);
+    const next = cloneRecords([record])[0]!;
+    if (index === -1) {
+      this.records.push(next);
+    } else {
+      this.records[index] = next;
+    }
+  }
+
+  async delete(id: string): Promise<void> {
+    this.records = this.records.filter((record) => record.id !== id);
   }
 }

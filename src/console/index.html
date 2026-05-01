@@ -1,0 +1,1139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MarvMem Console</title>
+<meta name="description" content="MarvMem Memory Platform — Control Plane">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=IBM+Plex+Mono:wght@400;500&family=Instrument+Serif&display=swap" rel="stylesheet">
+<style>
+/* ================================================================
+   MarvMem Console — Editorial Control Room
+   Inspired by Bloomberg Terminal + Magazine Typography
+   ================================================================ */
+
+:root {
+  --ink: #1a1a1a;
+  --ink-1: #2d2d2d;
+  --ink-2: #555;
+  --ink-3: #888;
+  --ink-4: #aaa;
+  --surface: #f5f4f0;
+  --surface-1: #eae8e3;
+  --surface-2: #dddbd5;
+  --surface-card: #fff;
+  --border: #d4d2cc;
+  --border-light: #e8e6e1;
+  --emerald: #0d9668;
+  --emerald-soft: rgba(13, 150, 104, 0.08);
+  --emerald-mid: rgba(13, 150, 104, 0.15);
+  --coral: #d94f3d;
+  --coral-soft: rgba(217, 79, 61, 0.08);
+  --ochre: #c08b30;
+  --ochre-soft: rgba(192, 139, 48, 0.08);
+  --slate: #4a6fa5;
+  --slate-soft: rgba(74, 111, 165, 0.08);
+  --sans: 'DM Sans', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', 'SF Mono', monospace;
+  --serif: 'Instrument Serif', Georgia, serif;
+  --ease: cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--sans);
+  background: var(--surface);
+  color: var(--ink);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* ================================================================ Layout */
+.app { display: flex; min-height: 100vh; }
+
+.sidebar {
+  width: 220px;
+  background: var(--ink);
+  color: #ccc;
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  top: 0; left: 0; bottom: 0;
+  z-index: 100;
+}
+
+.sidebar-brand {
+  padding: 28px 22px 24px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+.brand-text {
+  font-family: var(--serif);
+  font-size: 22px;
+  color: #fff;
+  letter-spacing: -0.5px;
+  line-height: 1;
+}
+
+.brand-sub {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: #666;
+  letter-spacing: 2.5px;
+  text-transform: uppercase;
+  margin-top: 6px;
+}
+
+.sidebar-nav { padding: 16px 12px; flex: 1; }
+
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px;
+  border-radius: 6px;
+  color: #999;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  transition: all 150ms var(--ease);
+  user-select: none;
+}
+
+.nav-item:hover { color: #ddd; background: rgba(255,255,255,0.05); }
+.nav-item.active {
+  color: #fff;
+  background: rgba(255,255,255,0.08);
+}
+.nav-item.active::before {
+  content: '';
+  width: 3px; height: 16px;
+  background: var(--emerald);
+  border-radius: 2px;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+
+.nav-icon { font-size: 13px; width: 18px; text-align: center; opacity: 0.7; }
+
+.sidebar-footer {
+  padding: 16px 22px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: #555;
+}
+
+.sidebar-footer .status-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--emerald);
+  display: inline-block;
+  margin-right: 5px;
+}
+
+.main { margin-left: 220px; flex: 1; min-height: 100vh; }
+
+.header {
+  padding: 18px 36px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky; top: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: space-between;
+}
+
+.header h1 {
+  font-family: var(--serif);
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: -0.5px;
+  color: var(--ink);
+}
+
+.header-actions { display: flex; gap: 8px; align-items: center; }
+
+.content { padding: 28px 36px; max-width: 1320px; }
+
+/* ================================================================ Cards */
+.card {
+  background: var(--surface-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.card-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-light);
+  display: flex; align-items: center; justify-content: space-between;
+}
+
+.card-title {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.card-body { padding: 18px; }
+
+/* ================================================================ Stats */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 28px;
+}
+
+.stat-card {
+  background: var(--surface-card);
+  padding: 22px 20px;
+}
+
+.stat-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-bottom: 10px;
+}
+
+.stat-value {
+  font-family: var(--serif);
+  font-size: 36px;
+  letter-spacing: -1.5px;
+  line-height: 1;
+  color: var(--ink);
+}
+
+.stat-sub {
+  font-size: 11px;
+  color: var(--ink-4);
+  margin-top: 8px;
+}
+
+/* ================================================================ Buttons */
+.btn {
+  padding: 7px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  background: var(--surface-card);
+  color: var(--ink);
+  cursor: pointer;
+  transition: all 150ms var(--ease);
+  font-family: var(--sans);
+}
+
+.btn:hover { background: var(--surface-1); }
+.btn-primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #fff;
+}
+.btn-primary:hover { background: var(--ink-1); }
+.btn-sm { padding: 4px 10px; font-size: 11px; }
+.btn-danger { color: var(--coral); border-color: var(--coral); background: transparent; }
+.btn-danger:hover { background: var(--coral-soft); }
+
+/* ================================================================ Inputs */
+.input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-card);
+  color: var(--ink);
+  font-size: 13px;
+  font-family: var(--sans);
+  outline: none;
+  transition: border-color 150ms var(--ease);
+}
+
+.input:focus { border-color: var(--ink-2); box-shadow: 0 0 0 3px rgba(0,0,0,0.04); }
+.input::placeholder { color: var(--ink-4); }
+.input-mono { font-family: var(--mono); font-size: 12px; }
+
+.search-bar { display: flex; gap: 8px; margin-bottom: 20px; }
+.search-bar .input { flex: 1; }
+
+/* ================================================================ Table */
+.table-wrap { overflow-x: auto; }
+
+table { width: 100%; border-collapse: collapse; }
+th {
+  text-align: left;
+  padding: 10px 16px;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-3);
+  border-bottom: 2px solid var(--ink);
+}
+td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-light);
+  font-size: 13px;
+  vertical-align: top;
+}
+tr:hover td { background: var(--surface); }
+
+/* ================================================================ Agent setup */
+.setup-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 20px;
+}
+
+.setup-cell {
+  background: var(--surface-card);
+  padding: 14px 16px;
+  min-width: 0;
+}
+
+.setup-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 1.3px;
+  margin-bottom: 6px;
+}
+
+.setup-value {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-1);
+  overflow-wrap: anywhere;
+}
+
+.agent-toolbar {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-bottom: 14px;
+}
+
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.agent-card {
+  background: var(--surface-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.agent-card-head {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-light);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.agent-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.agent-scope {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-4);
+  margin-top: 2px;
+}
+
+.agent-card-body { padding: 14px 16px; }
+.agent-status-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; }
+.agent-status-label { font-size: 12px; color: var(--ink-2); }
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.status-pill.ok { background: var(--emerald-soft); color: var(--emerald); border: 1px solid var(--emerald-mid); }
+.status-pill.warn { background: var(--ochre-soft); color: var(--ochre); }
+.status-pill.off { background: var(--surface-1); color: var(--ink-3); }
+
+.agent-path {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-4);
+  overflow-wrap: anywhere;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-light);
+}
+
+.agent-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-light);
+  background: var(--surface);
+}
+
+/* ================================================================ Tags */
+.tag {
+  display: inline-flex; align-items: center;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+}
+
+.tag-kind { background: var(--emerald-soft); color: var(--emerald); border: 1px solid var(--emerald-mid); }
+.tag-scope { background: var(--slate-soft); color: var(--slate); }
+.tag-source { background: var(--surface-1); color: var(--ink-2); }
+.tag-event { background: var(--ochre-soft); color: var(--ochre); }
+.tag-event[data-type="memory_deleted"] { background: var(--coral-soft); color: var(--coral); }
+
+.tags { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* ================================================================ Recall Inspector */
+.recall-layers { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+
+.layer-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface-card);
+}
+
+.layer-title {
+  padding: 10px 14px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--border-light);
+  display: flex; align-items: center; gap: 8px;
+}
+
+.layer-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid;
+}
+.layer-dot.active { border-color: var(--emerald); background: var(--emerald); }
+.layer-dot.task { border-color: var(--ochre); background: var(--ochre); }
+.layer-dot.retrieval { border-color: var(--slate); background: var(--slate); }
+.layer-dot.palace { border-color: var(--ink-2); background: var(--ink-2); }
+
+.layer-content {
+  padding: 14px 16px;
+  font-family: var(--mono);
+  font-size: 11px; line-height: 1.7;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.hit-row {
+  display: flex; align-items: start; gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+.hit-row:last-child { border-bottom: none; }
+.hit-score {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--emerald);
+  font-weight: 500;
+  min-width: 48px;
+}
+.hit-content { font-size: 13px; color: var(--ink-1); line-height: 1.5; flex: 1; }
+.hit-reasons {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--ink-4);
+  margin-top: 4px;
+  letter-spacing: 0.3px;
+}
+
+/* ================================================================ Timeline */
+.timeline { display: flex; flex-direction: column; }
+
+.timeline-item {
+  display: grid;
+  grid-template-columns: 120px 150px 1fr;
+  gap: 12px;
+  padding: 10px 16px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-light);
+  transition: background 100ms;
+}
+
+.timeline-item:hover { background: var(--surface); }
+.timeline-time { font-family: var(--mono); font-size: 11px; color: var(--ink-4); }
+.timeline-data { font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+
+/* ================================================================ Empty */
+.empty-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 60px 20px;
+  color: var(--ink-4);
+  text-align: center;
+}
+
+.empty-icon { font-size: 32px; margin-bottom: 14px; opacity: 0.4; }
+.empty-text { font-size: 13px; }
+
+/* ================================================================ Bar chart */
+.bar-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.bar-label { min-width: 110px; }
+.bar-track { flex: 1; height: 4px; background: var(--surface-1); border-radius: 2px; overflow: hidden; }
+.bar-fill { height: 100%; background: var(--ink); border-radius: 2px; transition: width 400ms var(--ease); }
+.bar-count { font-family: var(--mono); font-size: 11px; color: var(--ink-3); min-width: 24px; text-align: right; }
+
+/* ================================================================ Misc */
+.content-preview {
+  max-width: 420px; overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  line-height: 1.5;
+}
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 280px; }
+
+.loading {
+  color: var(--ink-4);
+  padding: 40px;
+  text-align: center;
+  font-size: 13px;
+}
+
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--surface-2); border-radius: 3px; }
+
+@media (max-width: 768px) {
+  .sidebar { display: none; }
+  .main { margin-left: 0; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .setup-grid { grid-template-columns: 1fr; }
+  .agent-toolbar { justify-content: flex-start; flex-wrap: wrap; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-text">MarvMem</div>
+      <div class="brand-sub">Control Plane</div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-item active" data-page="dashboard" onclick="navigate('dashboard')">
+        <span class="nav-icon">◧</span> Dashboard
+      </div>
+      <div class="nav-item" data-page="explorer" onclick="navigate('explorer')">
+        <span class="nav-icon">≡</span> Memory Explorer
+      </div>
+      <div class="nav-item" data-page="recall" onclick="navigate('recall')">
+        <span class="nav-icon">⊙</span> Recall Inspector
+      </div>
+      <div class="nav-item" data-page="agents" onclick="navigate('agents')">
+        <span class="nav-icon">⌘</span> Agents
+      </div>
+      <div class="nav-item" data-page="events" onclick="navigate('events')">
+        <span class="nav-icon">↳</span> Event Log
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="connection-status">Connected</span>
+      <br>v0.1.0
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="header">
+      <h1 id="page-title">Dashboard</h1>
+      <div class="header-actions">
+        <input class="input input-mono" id="api-key-input" placeholder="API Key" style="width:280px" />
+        <button class="btn btn-primary" onclick="connectWithKey()">Connect</button>
+      </div>
+    </header>
+
+    <div class="content" id="page-content">
+      <div class="loading">Enter API key to connect</div>
+    </div>
+  </main>
+</div>
+
+<script>
+// ================================================================
+// MarvMem Console — Client
+// ================================================================
+
+const PAGES = ['dashboard', 'explorer', 'recall', 'agents', 'events'];
+const initialPage = PAGES.includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : 'dashboard';
+
+const state = {
+  apiKey: new URLSearchParams(window.location.search).get('apiKey') || localStorage.getItem('marvmem_api_key') || '',
+  page: initialPage,
+  connected: false,
+};
+
+const $ = (id) => document.getElementById(id);
+const API_BASE = window.location.origin;
+
+// ================================================================ API
+async function api(path, options = {}) {
+  if (!state.apiKey) throw new Error('No API key');
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${state.apiKey}`,
+      ...options.headers,
+    },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+// ================================================================ Nav
+function navigate(page) {
+  if (!PAGES.includes(page)) page = 'dashboard';
+  state.page = page;
+  if (window.location.hash !== `#${page}`) window.history.replaceState(null, '', `#${page}`);
+  document.querySelectorAll('.nav-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.page === page);
+  });
+  const titles = {
+    dashboard: 'Dashboard',
+    explorer: 'Memory Explorer',
+    recall: 'Recall Inspector',
+    agents: 'Agents',
+    events: 'Event Log',
+  };
+  $('page-title').textContent = titles[page] || page;
+  render();
+}
+
+function connectWithKey() {
+  const key = $('api-key-input').value.trim();
+  if (!key) return;
+  state.apiKey = key;
+  localStorage.setItem('marvmem_api_key', key);
+  state.connected = true;
+  render();
+}
+
+// ================================================================ Render
+async function render() {
+  const el = $('page-content');
+  if (!state.apiKey) {
+    el.innerHTML = '<div class="empty-state"><div class="empty-icon">⌘</div><div class="empty-text">Enter API key to get started</div></div>';
+    return;
+  }
+  el.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    switch (state.page) {
+      case 'dashboard': await renderDashboard(el); break;
+      case 'explorer': await renderExplorer(el); break;
+      case 'recall': await renderRecall(el); break;
+      case 'agents': await renderAgents(el); break;
+      case 'events': await renderEvents(el); break;
+    }
+    $('status-dot').style.background = 'var(--emerald)';
+    $('connection-status').textContent = 'Connected';
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠</div><div class="empty-text">${esc(err.message)}</div></div>`;
+    $('status-dot').style.background = 'var(--coral)';
+    $('connection-status').textContent = 'Disconnected';
+  }
+}
+
+// ================================================================ Dashboard
+async function renderDashboard(el) {
+  const [stats, evData] = await Promise.all([
+    api('/v1/stats'),
+    api('/v1/events?limit=8'),
+  ]);
+
+  const kinds = Object.entries(stats.kinds || {}).sort((a, b) => b[1] - a[1]);
+  const scopes = Object.entries(stats.scopes || {}).sort((a, b) => b[1] - a[1]);
+  const events = evData.events || [];
+
+  el.innerHTML = `
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Memories</div>
+        <div class="stat-value">${stats.totalMemories}</div>
+        <div class="stat-sub">${kinds.length} distinct types</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Scopes</div>
+        <div class="stat-value">${scopes.length}</div>
+        <div class="stat-sub">project · repo · user</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Events</div>
+        <div class="stat-value">${stats.recentEvents}</div>
+        <div class="stat-sub">audit log</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Last Write</div>
+        <div class="stat-value" style="font-size:18px;font-family:var(--sans);font-weight:500">${stats.newestMemory ? timeAgo(stats.newestMemory) : '—'}</div>
+        <div class="stat-sub">${stats.newestMemory ? new Date(stats.newestMemory).toLocaleString() : 'No data'}</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Distribution by Kind</span></div>
+        <div class="card-body">
+          ${kinds.length === 0 ? '<div style="color:var(--ink-4)">No data</div>' : ''}
+          ${kinds.map(([kind, count]) => `
+            <div class="bar-row">
+              <div class="bar-label"><span class="tag tag-kind">${kind}</span></div>
+              <div class="bar-track"><div class="bar-fill" style="width:${(count / stats.totalMemories * 100).toFixed(0)}%"></div></div>
+              <div class="bar-count">${count}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">Recent Activity</span></div>
+        <div class="card-body" style="padding:0">
+          ${events.length === 0 ? '<div style="padding:18px;color:var(--ink-4)">No events</div>' : ''}
+          ${events.map(ev => `
+            <div style="display:flex;align-items:center;gap:10px;padding:9px 18px;border-bottom:1px solid var(--border-light)">
+              <span class="tag tag-event" data-type="${ev.type}">${ev.type.replace('memory_','').replace('recall_','')}</span>
+              <span style="font-family:var(--mono);font-size:10px;color:var(--ink-4);margin-left:auto">${timeAgo(ev.timestamp)}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ================================================================ Explorer
+async function renderExplorer(el) {
+  el.innerHTML = `
+    <div class="search-bar">
+      <input class="input" id="explorer-search" placeholder="Search memories…" onkeydown="if(event.key==='Enter')searchMemories()" />
+      <select class="input" id="explorer-kind" style="width:150px" onchange="searchMemories()">
+        <option value="">All types</option>
+      </select>
+      <button class="btn btn-primary" onclick="searchMemories()">Search</button>
+    </div>
+    <div id="explorer-results"><div class="loading">Loading…</div></div>
+  `;
+  await searchMemories();
+}
+
+async function searchMemories() {
+  const el = $('explorer-results');
+  if (!el) return;
+  el.innerHTML = '<div class="loading">Searching…</div>';
+
+  try {
+    const query = $('explorer-search')?.value?.trim() || '';
+    let memories;
+
+    if (query) {
+      const data = await api('/v1/recall', {
+        method: 'POST',
+        body: JSON.stringify({ context: {}, message: query, inspect: true, maxChars: 8000 }),
+      });
+      memories = (data.hits || []).map(h => ({ ...h.record, _score: h.score, _reasons: h.reasons }));
+    } else {
+      const data = await api('/v1/memories');
+      memories = data?.memories || [];
+    }
+
+    if (!Array.isArray(memories)) memories = [];
+
+    // Populate kind filter once
+    const kindSelect = $('explorer-kind');
+    if (kindSelect && kindSelect.options.length <= 1) {
+      [...new Set(memories.map(m => m.kind))].sort().forEach(k => {
+        const opt = document.createElement('option');
+        opt.value = k; opt.textContent = k;
+        kindSelect.appendChild(opt);
+      });
+    }
+
+    const kindFilter = $('explorer-kind')?.value;
+    if (kindFilter) memories = memories.filter(m => m.kind === kindFilter);
+
+    if (memories.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="empty-icon">∅</div><div class="empty-text">No memories found</div></div>';
+      return;
+    }
+
+    el.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">${memories.length} Records</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Kind</th><th>Content</th><th>Scope</th><th>Conf.</th>
+              ${query ? '<th>Score</th>' : ''}
+              <th>Updated</th><th></th>
+            </tr></thead>
+            <tbody>
+              ${memories.map(m => `<tr>
+                <td><span class="tag tag-kind">${m.kind}</span></td>
+                <td>
+                  <div class="content-preview">${esc(m.content)}</div>
+                  ${m.tags?.length ? `<div class="tags" style="margin-top:5px">${m.tags.map(t => `<span class="tag tag-source">${t}</span>`).join('')}</div>` : ''}
+                </td>
+                <td><span class="tag tag-scope">${m.scope?.type}:${trunc(m.scope?.id, 10)}</span></td>
+                <td style="font-family:var(--mono);font-size:12px;color:${m.confidence >= 0.8 ? 'var(--emerald)' : 'var(--ochre)'}">${(m.confidence || 0).toFixed(2)}</td>
+                ${query ? `<td style="font-family:var(--mono);font-size:12px;color:var(--emerald)">${(m._score || 0).toFixed(3)}</td>` : ''}
+                <td style="font-size:11px;color:var(--ink-4);white-space:nowrap">${timeAgo(m.updatedAt)}</td>
+                <td><button class="btn btn-sm btn-danger" onclick="deleteMemory('${m.id}')">Delete</button></td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠</div><div class="empty-text">${esc(err.message)}</div></div>`;
+  }
+}
+
+async function deleteMemory(id) {
+  if (!confirm('Delete this memory permanently?')) return;
+  try {
+    const res = await fetch(`${API_BASE}/v1/memories/${id}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${state.apiKey}` },
+    });
+    if (!res.ok && res.status !== 204) throw new Error('Delete failed');
+    await searchMemories();
+  } catch (err) { alert(err.message); }
+}
+
+// ================================================================ Recall
+async function renderRecall(el) {
+  el.innerHTML = `
+    <div class="search-bar">
+      <input class="input" id="recall-query" placeholder="Enter query to inspect recall layers…" onkeydown="if(event.key==='Enter')inspectRecall()" />
+      <button class="btn btn-primary" onclick="inspectRecall()">Inspect</button>
+    </div>
+    <div id="recall-results">
+      <div class="empty-state" style="padding:40px">
+        <div class="empty-icon">⊙</div>
+        <div class="empty-text">Enter a query to see how recall layers compose</div>
+      </div>
+    </div>
+  `;
+}
+
+async function inspectRecall() {
+  const query = $('recall-query')?.value?.trim();
+  if (!query) return;
+  const el = $('recall-results');
+  el.innerHTML = '<div class="loading">Inspecting…</div>';
+
+  try {
+    const data = await api('/v1/inspect/recall', {
+      method: 'POST',
+      body: JSON.stringify({ context: {}, message: query }),
+    });
+
+    const layers = data.layers || {};
+    const hits = data.hits || [];
+
+    el.innerHTML = `
+      <div class="recall-layers">
+        ${mkLayer('Active Context', 'active', layers.active)}
+        ${mkLayer('Task Context', 'task', layers.task)}
+        ${mkLayer('Retrieval', 'retrieval', layers.retrieval)}
+        ${mkLayer('Palace Memory', 'palace', layers.palace)}
+      </div>
+
+      ${hits.length > 0 ? `
+        <div class="card" style="margin-top:20px">
+          <div class="card-header"><span class="card-title">Search Hits · ${hits.length}</span></div>
+          <div class="card-body" style="padding:10px 16px">
+            ${hits.map(h => `
+              <div class="hit-row">
+                <div class="hit-score">${(h.score || 0).toFixed(3)}</div>
+                <div style="flex:1">
+                  <div class="hit-content">${esc(h.snippet || h.record?.content || '')}</div>
+                  <div class="hit-reasons">${h.reasons ? Object.entries(h.reasons).map(([k,v]) => `${k}:${Number(v).toFixed(2)}`).join(' · ') : ''}</div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+      <div class="card" style="margin-top:20px">
+        <div class="card-header"><span class="card-title">Injected Context</span></div>
+        <div class="card-body">
+          <pre style="font-family:var(--mono);font-size:11px;line-height:1.7;color:var(--ink-2);white-space:pre-wrap;max-height:360px;overflow-y:auto">${esc(data.injectedContext || '(empty)')}</pre>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠</div><div class="empty-text">${esc(err.message)}</div></div>`;
+  }
+}
+
+function mkLayer(title, type, content) {
+  const has = content && content.trim();
+  return `
+    <div class="layer-card">
+      <div class="layer-title">
+        <div class="layer-dot ${type}"></div>
+        ${title}
+        <span style="margin-left:auto;font-size:10px;color:${has ? 'var(--emerald)' : 'var(--ink-4)'}">${has ? `${content.length} chars` : 'empty'}</span>
+      </div>
+      ${has ? `<div class="layer-content">${esc(content)}</div>` : ''}
+    </div>
+  `;
+}
+
+// ================================================================ Agents
+async function renderAgents(el) {
+  await loadAgents(el);
+}
+
+async function loadAgents(container) {
+  const el = container || $('page-content');
+  el.innerHTML = '<div class="loading">Scanning agents…</div>';
+  const data = await api('/v1/agents/status');
+  const agents = data.agents || [];
+
+  el.innerHTML = `
+    <div class="setup-grid">
+      <div class="setup-cell">
+        <div class="setup-label">Shared SQLite</div>
+        <div class="setup-value">${esc(data.storagePath)}</div>
+      </div>
+      <div class="setup-cell">
+        <div class="setup-label">MCP Script</div>
+        <div class="setup-value">${esc(data.mcpPath)}</div>
+      </div>
+    </div>
+
+    <div class="agent-toolbar">
+      <button class="btn" onclick="agentBulkAction('/v1/agents/import-all')">Import All</button>
+      <button class="btn btn-primary" onclick="agentBulkAction('/v1/agents/install-all')">Install All</button>
+      <button class="btn" onclick="loadAgents()">Refresh</button>
+    </div>
+
+    <div class="agent-grid">
+      ${agents.map(renderAgentCard).join('')}
+    </div>
+  `;
+}
+
+function renderAgentCard(agent) {
+  const ready = agent.mcp.configured && agent.mcp.storagePathMatches;
+  const instructions = agent.instructions.supported
+    ? pill(agent.instructions.installed ? 'installed' : 'missing', agent.instructions.installed)
+    : pill('n/a', null);
+  const importedLabel = agent.imported.memories > 0
+    ? `${agent.imported.memories} memories · ${agent.imported.tasks} tasks`
+    : 'none';
+
+  return `
+    <div class="agent-card">
+      <div class="agent-card-head">
+        <div>
+          <div class="agent-name">${esc(agent.label)}</div>
+          <div class="agent-scope">agent:${esc(agent.scopeId)}</div>
+        </div>
+        ${pill(ready ? 'ready' : 'setup needed', ready)}
+      </div>
+      <div class="agent-card-body">
+        <div class="agent-status-row">
+          <span class="agent-status-label">MCP</span>
+          ${pill(agent.mcp.configured ? (agent.mcp.storagePathMatches ? 'configured' : 'wrong db') : 'missing', agent.mcp.configured && agent.mcp.storagePathMatches)}
+        </div>
+        <div class="agent-status-row">
+          <span class="agent-status-label">Instructions</span>
+          ${instructions}
+        </div>
+        <div class="agent-status-row">
+          <span class="agent-status-label">Sessions</span>
+          ${pill(agent.sessions.rootExists ? 'found' : 'missing', agent.sessions.rootExists)}
+        </div>
+        <div class="agent-status-row">
+          <span class="agent-status-label">Imported</span>
+          ${pill(importedLabel, agent.imported.memories > 0)}
+        </div>
+        <div class="agent-path">${esc(agent.paths.sessionsRoot)}</div>
+      </div>
+      <div class="agent-actions">
+        <button class="btn btn-sm" onclick="agentAction('/v1/agents/import', '${agent.agent}')">Import</button>
+        <button class="btn btn-sm btn-primary" onclick="agentAction('/v1/agents/install', '${agent.agent}')">Install</button>
+      </div>
+    </div>
+  `;
+}
+
+function pill(text, ok) {
+  const cls = ok === null ? 'off' : ok ? 'ok' : 'warn';
+  return `<span class="status-pill ${cls}">${esc(text)}</span>`;
+}
+
+async function agentAction(path, agent) {
+  await runAgentMutation(() => api(path, {
+    method: 'POST',
+    body: JSON.stringify({ agent }),
+  }));
+}
+
+async function agentBulkAction(path) {
+  await runAgentMutation(() => api(path, { method: 'POST', body: '{}' }));
+}
+
+async function runAgentMutation(fn) {
+  const buttons = [...document.querySelectorAll('.agent-actions button, .agent-toolbar button')];
+  buttons.forEach(btn => btn.disabled = true);
+  try {
+    await fn();
+    await loadAgents();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    buttons.forEach(btn => btn.disabled = false);
+  }
+}
+
+// ================================================================ Events
+async function renderEvents(el) {
+  el.innerHTML = `
+    <div class="search-bar">
+      <select class="input" id="events-type" style="width:200px" onchange="loadEvents()">
+        <option value="">All events</option>
+        <option value="memory_written">memory_written</option>
+        <option value="memory_updated">memory_updated</option>
+        <option value="memory_deleted">memory_deleted</option>
+        <option value="recall_built">recall_built</option>
+        <option value="projection_synced">projection_synced</option>
+      </select>
+      <button class="btn" onclick="loadEvents()">Refresh</button>
+    </div>
+    <div id="events-list"><div class="loading">Loading…</div></div>
+  `;
+  await loadEvents();
+}
+
+async function loadEvents() {
+  const el = $('events-list');
+  const type = $('events-type')?.value || '';
+  try {
+    const data = await api(`/v1/events?limit=100${type ? `&type=${type}` : ''}`);
+    const events = data.events || [];
+
+    if (events.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="empty-icon">↳</div><div class="empty-text">No events recorded</div></div>';
+      return;
+    }
+
+    el.innerHTML = `
+      <div class="card">
+        <div class="card-header"><span class="card-title">${events.length} Events</span></div>
+        <div class="card-body" style="padding:0">
+          <div class="timeline">
+            ${events.map(ev => `
+              <div class="timeline-item">
+                <div class="timeline-time">${fmtTime(ev.timestamp)}</div>
+                <div><span class="tag tag-event" data-type="${ev.type}">${ev.type}</span></div>
+                <div class="timeline-data">${ev.data ? Object.entries(ev.data).map(([k,v]) => `${k}: ${typeof v === 'string' ? trunc(v, 28) : v}`).join(' · ') : '—'}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠</div><div class="empty-text">${esc(err.message)}</div></div>`;
+  }
+}
+
+// ================================================================ Helpers
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function trunc(s, n) {
+  if (!s) return '';
+  return s.length > n ? s.slice(0, n) + '…' : s;
+}
+
+function timeAgo(iso) {
+  if (!iso) return '—';
+  const diff = Date.now() - new Date(iso).getTime();
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+function fmtTime(iso) {
+  if (!iso) return '';
+  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+// ================================================================ Init
+window.addEventListener('DOMContentLoaded', () => {
+  if (state.apiKey) {
+    $('api-key-input').value = state.apiKey;
+    state.connected = true;
+  }
+  navigate(state.page);
+});
+</script>
+</body>
+</html>

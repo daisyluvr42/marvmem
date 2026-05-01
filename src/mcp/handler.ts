@@ -115,6 +115,10 @@ export function createMemoryToolSet(params: {
             type: "array",
             items: { type: "string" },
           },
+          metadata: {
+            type: "object",
+            additionalProperties: true,
+          },
         },
         required: ["content", "scopeType", "scopeId"],
       },
@@ -132,6 +136,7 @@ export function createMemoryToolSet(params: {
             tags: Array.isArray(args.tags)
               ? args.tags.filter((entry): entry is string => typeof entry === "string")
               : undefined,
+            metadata: asRecord(args.metadata) ?? undefined,
           }),
         };
       },
@@ -154,6 +159,10 @@ export function createMemoryToolSet(params: {
             type: "array",
             items: { type: "string" },
           },
+          metadata: {
+            type: "object",
+            additionalProperties: true,
+          },
         },
         required: ["id"],
       },
@@ -167,6 +176,7 @@ export function createMemoryToolSet(params: {
         if (args.importance !== undefined) patch.importance = args.importance;
         if (args.source !== undefined) patch.source = args.source;
         if (args.tags !== undefined) patch.tags = args.tags;
+        if (args.metadata !== undefined) patch.metadata = asRecord(args.metadata);
         const record = await params.memory.update(id, patch);
         return { record, updated: record !== null };
       },

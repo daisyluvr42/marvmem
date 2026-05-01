@@ -33,6 +33,12 @@ test("lists MCP tools and executes write/search flow", async () => {
         kind: "preference",
         scopeType: "user",
         scopeId: "alice",
+        source: "codex_session_import",
+        tags: ["codex", "session"],
+        metadata: {
+          sessionId: "s1",
+          cwd: "/repo",
+        },
       },
     },
   });
@@ -56,6 +62,58 @@ test("lists MCP tools and executes write/search flow", async () => {
   const parsed = JSON.parse(search.result?.content?.[0]?.text ?? "{}");
   assert.equal(parsed.hits?.length, 1);
   assert.match(parsed.hits?.[0]?.record.content ?? "", /Chinese/);
+  assert.equal(parsed.hits?.[0]?.record.source, "codex_session_import");
+  assert.deepEqual(parsed.hits?.[0]?.record.tags, ["codex", "session"]);
+  assert.deepEqual(parsed.hits?.[0]?.record.metadata, { sessionId: "s1", cwd: "/repo" });
+});
+
+test("memory_recall exposes record markers through MCP", async () => {
+  const memory = createMarvMem({ store: new InMemoryStore() });
+  const handler = createMemoryMcpHandler({ memory });
+
+  await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: "memory_write",
+      arguments: {
+        content: "Cursor session established the release checklist.",
+        kind: "decision",
+        scopeType: "agent",
+        scopeId: "cursor",
+        source: "cursor_session_import",
+        tags: ["cursor", "session", "release"],
+        metadata: {
+          sessionId: "cursor-1",
+          taskId: "cursor-session-cursor-1",
+        },
+      },
+    },
+  });
+
+  const recallResult = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/call",
+    params: {
+      name: "memory_recall",
+      arguments: {
+        message: "release checklist",
+        maxChars: 1000,
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+
+  const recall = JSON.parse(recallResult.result?.content?.[0]?.text ?? "{}");
+  assert.match(recall.injectedContext, /source: cursor_session_import/);
+  assert.match(recall.injectedContext, /tags: cursor, session, release/);
+  assert.match(recall.injectedContext, /"sessionId":"cursor-1"/);
+  assert.equal(recall.hits?.[0]?.record.source, "cursor_session_import");
+  assert.deepEqual(recall.hits?.[0]?.record.metadata, {
+    sessionId: "cursor-1",
+    taskId: "cursor-session-cursor-1",
+  });
 });
 
 test("memory_list and memory_delete work through MCP", async () => {

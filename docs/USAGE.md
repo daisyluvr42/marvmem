@@ -468,6 +468,24 @@ MCP handler 提供了 14 个工具：
 | `memory_maintenance_calibrate` | 执行 experience 校准 |
 | `memory_maintenance_rebuild` | 重建 experience |
 
+`memory_write` / `memory_update` 可以写入 `source`、`tags` 和 `metadata`。如果一条新记忆被合并到已有记录，tags 和 metadata 会合并，额外来源会保存在 `metadata.sourceHistory`，有冲突的标记会保存在 `metadata.markerHistory`。`memory_recall` 会在返回的 `hits[].record` 中保留完整记录，并在 prompt-ready 文本里显示每条命中的 source、tags 和 metadata 标记。
+
+示例参数：
+
+```json
+{
+  "scope": { "type": "agent", "id": "codex" },
+  "kind": "preference",
+  "content": "用户希望代码修复走根因路径，不要堆兜底补丁。",
+  "source": "codex",
+  "tags": ["coding", "preference"],
+  "metadata": {
+    "project": "marvmem",
+    "origin": "manual-note"
+  }
+}
+```
+
 如果你是要本地部署一个正式可用的 MCP server，推荐直接运行：
 
 ```bash
@@ -510,6 +528,255 @@ claude mcp add-json -s project marvmem '{"type":"stdio","command":"node","args":
 ```
 
 这条命令会在当前项目写入 `.mcp.json`。可以用 `claude mcp get marvmem` 确认 server 已连接。
+
+### 全局安装到 coding agent
+
+如果目标是把 MarvMem 当成跨 agent 的用户记忆模块，推荐用全局安装入口：
+
+```bash
+npm run build
+node dist/bin/marvmem-agent.js install all
+```
+
+也可以只安装某一个 agent：
+
+```bash
+node dist/bin/marvmem-agent.js install codex
+node dist/bin/marvmem-agent.js install claude
+node dist/bin/marvmem-agent.js install cursor
+node dist/bin/marvmem-agent.js install copilot
+node dist/bin/marvmem-agent.js install antigravity
+```
+
+默认会做三件事：
+
+- 安装全局 MCP 配置，所有 agent 指向同一个 `~/.marvmem/memory.sqlite`
+- 第一次运行时导入已有本地 session；重复运行会按已有 `taskId` 跳过
+- 给支持文件级全局指令的 agent 写入 MarvMem 使用规则
+
+各 agent 的默认落点：
+
+| Agent | MCP 配置 | 指令文件 | 历史 session 导入 |
+|-------|----------|----------|------------------|
+| Codex | `~/.codex/config.toml` | `~/.codex/AGENTS.md` | `~/.codex/sessions` |
+| Claude Code | `claude mcp add-json --scope user` | `~/.claude/CLAUDE.md` | `~/.claude/projects` |
+| Cursor | `~/.cursor/mcp.json` | 全局 User Rules 由 Cursor 设置界面管理；项目级可用 `AGENTS.md` | `~/Library/Application Support/Cursor/User` |
+| Copilot CLI | `~/.copilot/mcp-config.json` | `~/.copilot/copilot-instructions.md` | `~/Library/Application Support/Code/User` |
+| Antigravity | `~/.gemini/antigravity/mcp_config.json` | 全局指令由 Antigravity 设置界面管理 | `~/.gemini/antigravity/brain` |
+
+这个安装入口不会给 MCP server 设置默认 `agent:*` scope。这样 agent 调 `memory_recall` 时如果不传 scope，就可以从同一个 SQLite 里跨 agent 召回；需要写入新记忆或做窄查询时，再按指令使用当前 agent 的 scope，例如 `agent:codex`、`agent:claude`、`agent:cursor`、`agent:copilot` 或 `agent:antigravity`。
+
+常用选项：
+
+```bash
+node dist/bin/marvmem-agent.js install all \
+  --storage-path ~/.marvmem/memory.sqlite
+
+node dist/bin/marvmem-agent.js install codex \
+  --sessions-root ~/.codex/sessions
+
+node dist/bin/marvmem-agent.js install copilot \
+  --skip-import
+```
+
+`marvmem-agent` 命令速查：
+
+| 命令 | 用途 |
+|------|------|
+| `marvmem-agent install <agent\|all>` | 写入 MCP 配置、导入历史 session、写入全局指令 |
+| `marvmem-agent ui` | 启动本地 Web 控制台 |
+| `marvmem-agent tui` | 启动终端控制台 |
+
+`install` 支持的 target：`codex`、`claude`、`cursor`、`copilot`、`antigravity`、`all`。
+
+`marvmem-agent` 的常用参数：
+
+| 参数 | 适用命令 | 作用 |
+|------|----------|------|
+| `--storage-path <path>` | `install` / `ui` / `tui` | 指定共享 SQLite 路径 |
+| `--mcp-path <path>` | `install` / `ui` / `tui` | 指定写入 agent 配置的 `marvmem-mcp` 脚本路径 |
+| `--home <path>` | `install` / `ui` / `tui` | 指定 agent 配置所在的 home 目录，测试或迁移时有用 |
+| `--sessions-root <path>` | `install` 单 agent | 覆盖该 agent 的历史 session 目录 |
+| `--skip-mcp` | `install` | 不写 MCP 配置 |
+| `--skip-import` | `install` | 不导入历史 session |
+| `--skip-instructions` | `install` | 不写全局指令 |
+| `--port <number>` | `ui` | 指定 Web 控制台端口 |
+| `--host <host>` | `ui` | 指定 Web 控制台监听地址 |
+| `--once` | `tui` | 只打印一次状态并退出 |
+
+### 本地 agent 设置 UI
+
+安装 MarvMem 之后，也可以启动本地控制台来探测和统一配置这些 agent：
+
+```bash
+npm run build
+node dist/bin/marvmem-agent.js ui
+```
+
+启动后命令行会打印 Console 地址和本次 API key。打开 `http://127.0.0.1:3377/console#agents`，输入 API key 后，Agents 页面会显示：
+
+- 当前共享 SQLite 路径和 MCP 脚本路径
+- Codex、Claude Code、Cursor、Copilot、Antigravity 的 MCP 配置状态
+- 全局指令是否已写入
+- 默认 session 目录是否存在
+- 已导入到共享记忆库的 session memory / task 数量
+
+页面里的 `Install` / `Install All` 调用的就是 `marvmem-agent install` 同一套逻辑；`Import` / `Import All` 调用下面的 session 导入工具，同样写入同一个 `~/.marvmem/memory.sqlite`。
+
+如果默认端口已经被占用，换一个端口即可：
+
+```bash
+node dist/bin/marvmem-agent.js ui \
+  --port 3378 \
+  --storage-path ~/.marvmem/memory.sqlite
+```
+
+也可以把 API key 放进 URL 直接进入 Agents 页：
+
+```text
+http://127.0.0.1:3378/console?apiKey=<printed-api-key>#agents
+```
+
+### 本地 agent 设置 TUI
+
+如果只想在终端里完成同样的探测和配置，可以启动 TUI：
+
+```bash
+npm run build
+node dist/bin/marvmem-agent.js tui
+```
+
+TUI 会显示同一组状态字段，并提供安装全部、导入全部、安装单个 agent、导入单个 agent、刷新和退出。它复用 `marvmem-agent install` 和 session 导入工具，不维护第二套配置逻辑。
+
+只打印一次状态、不进入交互菜单：
+
+```bash
+node dist/bin/marvmem-agent.js tui --once
+```
+
+指定同一套共享库和 MCP 脚本：
+
+```bash
+node dist/bin/marvmem-agent.js tui \
+  --storage-path ~/.marvmem/memory.sqlite \
+  --mcp-path /absolute/path/to/marvmem/dist/bin/marvmem-mcp.js
+```
+
+交互菜单动作：
+
+| 动作 | 效果 |
+|------|------|
+| `Install all` | 给所有支持的 agent 写入 MCP 配置、指令，并导入历史 session |
+| `Import all` | 只导入所有 agent 的历史 session |
+| `Install agent` | 对单个 agent 执行安装 |
+| `Import agent` | 对单个 agent 执行导入 |
+| `Refresh` | 重新探测状态 |
+
+### 本地 agent 设置 HTTP API
+
+`marvmem-agent ui` 启动的本地 server 也提供同一套 agent 控制 API。它使用启动时打印的 API key 鉴权：
+
+```bash
+export BASE=http://127.0.0.1:3377
+export API_KEY=<printed-api-key>
+```
+
+| Endpoint | 方法 | 用途 |
+|----------|------|------|
+| `/v1/agents/status` | `GET` | 返回共享库路径、MCP 脚本路径、每个 agent 的配置和导入状态 |
+| `/v1/agents/install` | `POST` | 安装单个 agent，body 为 `{"agent":"codex"}` |
+| `/v1/agents/import` | `POST` | 导入单个 agent 的历史 session |
+| `/v1/agents/install-all` | `POST` | 安装全部 agent |
+| `/v1/agents/import-all` | `POST` | 导入全部 agent 的历史 session |
+
+示例：
+
+```bash
+curl -H "Authorization: Bearer $API_KEY" \
+  "$BASE/v1/agents/status"
+
+curl -X POST \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"agent":"claude"}' \
+  "$BASE/v1/agents/install"
+
+curl -X POST \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  "$BASE/v1/agents/import-all"
+```
+
+### 导入已有 agent session
+
+如果已经把 MCP server 接好了，又想让旧的本地 session 也进入 MarvMem，可以跑一次导入工具。它们会把每个 session 写成一份 task transcript，再写一条可搜索的 palace note。重复运行时，如果同一个 `taskId` 已经存在，会跳过，不会重复导入。
+
+先在 MarvMem 源码目录 build：
+
+```bash
+npm run build
+```
+
+通用参数：
+
+- `--storage-path <path>`：目标 SQLite，默认 `~/.marvmem/memory.sqlite`
+- `--scope-type <type>`：目标 scope type，默认 `agent`
+- `--scope-id <id>`：目标 scope id，默认按 agent 区分
+- `[sessions-root]`：可选的位置参数，用来覆盖默认 session 目录
+
+| 工具 | 默认读取位置 | 默认 scope id |
+|------|--------------|---------------|
+| `marvmem-codex-import` | `~/.codex/sessions` | `codex` |
+| `marvmem-claude-import` | `~/.claude/projects` | `claude` |
+| `marvmem-cursor-import` | `~/Library/Application Support/Cursor/User` | `cursor` |
+| `marvmem-copilot-import` | `~/Library/Application Support/Code/User` | `copilot` |
+| `marvmem-antigravity-import` | `~/.gemini/antigravity/brain` | `antigravity` |
+
+本地源码运行方式：
+
+```bash
+node dist/bin/marvmem-codex-import.js \
+  --storage-path ~/.marvmem/memory.sqlite \
+  --scope-type agent \
+  --scope-id codex
+
+node dist/bin/marvmem-claude-import.js \
+  --storage-path ~/.marvmem/memory.sqlite \
+  --scope-type agent \
+  --scope-id claude
+
+node dist/bin/marvmem-cursor-import.js \
+  --storage-path ~/.marvmem/memory.sqlite \
+  --scope-type agent \
+  --scope-id cursor
+
+node dist/bin/marvmem-copilot-import.js \
+  --storage-path ~/.marvmem/memory.sqlite \
+  --scope-type agent \
+  --scope-id copilot
+
+node dist/bin/marvmem-antigravity-import.js \
+  --storage-path ~/.marvmem/memory.sqlite \
+  --scope-type agent \
+  --scope-id antigravity
+```
+
+如果 session 不在默认目录，把目录放在命令后面即可：
+
+```bash
+node dist/bin/marvmem-claude-import.js /path/to/sessions \
+  --storage-path /path/to/memory.sqlite \
+  --scope-type agent \
+  --scope-id claude
+```
+
+导入结果会写入两类数据：
+
+- task context：`taskId` 形如 `<agent>:<session-id>`，保留用户/assistant transcript
+- palace memory：`source` 形如 `<agent>_session_import`，默认 tags 是 `<agent>` 和 `session`
+
+palace memory 的 metadata 会保留 `sessionId`、`sessionPath`、`cwd`、`timestamp`、`taskId`、`messageCount`，以及各 importer 能读到的 agent 原始标记。
 
 ## 13. 存储方式的选择
 

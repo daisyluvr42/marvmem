@@ -225,8 +225,11 @@ export class MarvMem {
             });
 
             if (decision.action === "ignore") {
-              // Return existing record unchanged
               const best = candidates[0]!.record;
+              applyIncomingMarkers(best, input);
+              best.updatedAt = nowIso;
+              await this.persistRecord(records, best);
+              await this.syncDerivedState(best);
               return { ...best, scope: { ...best.scope }, tags: [...best.tags] };
             }
 
@@ -237,9 +240,9 @@ export class MarvMem {
                 target.summary = summarizeContent(target.content);
                 target.confidence = clamp(Math.max(target.confidence, input.confidence ?? 0.7), 0.05, 1);
                 target.importance = clamp(Math.max(target.importance, input.importance ?? 0.5), 0, 1);
-                target.tags = [...new Set([...target.tags, ...(input.tags ?? []).map((t) => normalizeText(t)).filter(Boolean)])];
+                applyIncomingMarkers(target, input);
                 target.updatedAt = nowIso;
-                await this.store.save(records);
+                await this.persistRecord(records, target);
                 await this.syncDerivedState(target);
                 return { ...target, scope: { ...target.scope }, tags: [...target.tags] };
               }
@@ -253,10 +256,10 @@ export class MarvMem {
                 target.summary = summarizeContent(target.content);
                 target.confidence = clamp(input.confidence ?? 0.7, 0.05, 1);
                 target.importance = clamp(input.importance ?? 0.5, 0, 1);
-                target.tags = [...new Set([...target.tags, ...(input.tags ?? []).map((t) => normalizeText(t)).filter(Boolean)])];
-                target.updatedAt = nowIso;
                 target.metadata = { ...target.metadata, contradicted: true, previousContent };
-                await this.store.save(records);
+                applyIncomingMarkers(target, input);
+                target.updatedAt = nowIso;
+                await this.persistRecord(records, target);
                 await this.syncDerivedState(target);
                 return { ...target, scope: { ...target.scope }, tags: [...target.tags] };
               }
@@ -271,9 +274,9 @@ export class MarvMem {
               existing.summary = input.summary?.trim() || summarizeContent(input.content);
               existing.confidence = clamp(Math.max(existing.confidence, input.confidence ?? 0.7), 0.05, 1);
               existing.importance = clamp(Math.max(existing.importance, input.importance ?? 0.5), 0, 1);
-              existing.tags = [...new Set([...existing.tags, ...(input.tags ?? []).map((tag) => normalizeText(tag)).filter(Boolean)])];
+              applyIncomingMarkers(existing, input);
               existing.updatedAt = nowIso;
-              await this.store.save(records);
+              await this.persistRecord(records, existing);
               await this.syncDerivedState(existing);
               return { ...existing, scope: { ...existing.scope }, tags: [...existing.tags] };
             }
@@ -297,7 +300,7 @@ export class MarvMem {
         updatedAt: nowIso,
       };
       records.push(record);
-      await this.store.save(records);
+      await this.persistRecord(records, record);
       await this.syncDerivedState(record);
       return record;
     });
@@ -325,7 +328,7 @@ export class MarvMem {
       if (patch.metadata !== undefined) record.metadata = patch.metadata ? { ...patch.metadata } : undefined;
       record.updatedAt = nowIso;
 
-      await this.store.save(records);
+      await this.persistRecord(records, record);
       await this.syncDerivedState(record);
       return { ...record, scope: { ...record.scope }, tags: [...record.tags] };
     });
@@ -337,7 +340,7 @@ export class MarvMem {
       const index = records.findIndex((r) => r.id === id);
       if (index === -1) return false;
       records.splice(index, 1);
-      await this.store.save(records);
+      await this.deleteRecord(records, id);
       await this.retrieval.deleteVector(id);
       await this.clearEntityLinks(id);
       return true;
@@ -430,6 +433,22 @@ export class MarvMem {
     const next = this.mutationQueue.then(fn, fn);
     this.mutationQueue = next.then(() => {}, () => {});
     return next;
+  }
+
+  private async persistRecord(records: MemoryRecord[], record: MemoryRecord): Promise<void> {
+    if (this.store.upsert) {
+      await this.store.upsert(record);
+      return;
+    }
+    await this.store.save(records);
+  }
+
+  private async deleteRecord(records: MemoryRecord[], id: string): Promise<void> {
+    if (this.store.delete) {
+      await this.store.delete(id);
+      return;
+    }
+    await this.store.save(records);
   }
 
   private async syncDerivedState(record: MemoryRecord): Promise<void> {
@@ -657,6 +676,63 @@ function buildSearchText(record: MemoryRecord): string {
     .join("\n");
 }
 
+function applyIncomingMarkers(record: MemoryRecord, input: MemoryInput): void {
+  const incomingTags = (input.tags ?? []).map((tag) => normalizeText(tag)).filter(Boolean);
+  record.tags = [
+    ...new Set([...record.tags, ...incomingTags]),
+  ];
+
+  const incomingMetadata = input.metadata ? { ...input.metadata } : undefined;
+  const incomingSource = input.source?.trim();
+  if (!incomingMetadata && (!incomingSource || incomingSource === record.source)) {
+    return;
+  }
+
+  const previousMetadata = record.metadata ?? {};
+  const nextMetadata: Record<string, unknown> = { ...previousMetadata };
+  let metadataConflict = false;
+  if (incomingMetadata) {
+    for (const [key, value] of Object.entries(incomingMetadata)) {
+      if (!(key in nextMetadata)) {
+        nextMetadata[key] = value;
+      } else if (JSON.stringify(nextMetadata[key]) !== JSON.stringify(value)) {
+        metadataConflict = true;
+      }
+    }
+  }
+  if (incomingSource && incomingSource !== record.source) {
+    nextMetadata.sourceHistory = [
+      ...new Set([
+        record.source,
+        ...stringArray(previousMetadata.sourceHistory),
+        ...stringArray(incomingMetadata?.sourceHistory),
+        incomingSource,
+      ]),
+    ];
+  }
+  if ((incomingSource && incomingSource !== record.source) || metadataConflict) {
+    nextMetadata.markerHistory = [
+      ...objectArray(previousMetadata.markerHistory),
+      {
+        source: incomingSource ?? "manual",
+        tags: incomingTags,
+        metadata: incomingMetadata ?? {},
+      },
+    ];
+  }
+  record.metadata = nextMetadata;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string" && !!entry.trim()) : [];
+}
+
+function objectArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object" && !Array.isArray(entry))
+    : [];
+}
+
 function computeRecencyBoost(iso: string, now: Date): number {
   const timestamp = Date.parse(iso);
   if (Number.isNaN(timestamp)) {
@@ -720,8 +796,16 @@ export function formatRecallContext(hits: MemorySearchHit[], maxChars: number): 
   ];
   let used = lines.join("\n").length;
   for (const hit of hits) {
+    const markers = [`source: ${hit.record.source}`];
+    if (hit.record.tags.length > 0) {
+      markers.push(`tags: ${hit.record.tags.join(", ")}`);
+    }
+    if (hit.record.metadata) {
+      markers.push(`metadata: ${JSON.stringify(hit.record.metadata)}`);
+    }
     const block = [
       `- [${hit.record.kind}] ${hit.record.scope.type}:${hit.record.scope.id} (score ${hit.score.toFixed(2)})`,
+      `  markers: ${markers.join("; ")}`,
       `  ${hit.record.content.trim()}`,
     ].join("\n");
     if (used + block.length + 1 > maxChars) {

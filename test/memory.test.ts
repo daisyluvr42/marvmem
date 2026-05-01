@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createMarvMem, InMemoryStore } from "../src/core/index.js";
 import { InMemoryVectorStore } from "../src/retrieval/vector-memory.js";
 import { InMemoryEntityStore } from "../src/entity/store-memory.js";
@@ -54,19 +57,65 @@ test("deduplicates similar memories instead of creating duplicates", async () =>
     kind: "preference",
     content: "Alice prefers concise Chinese replies.",
     importance: 0.5,
+    source: "codex",
+    tags: ["codex"],
+    metadata: { sessionId: "c1" },
   });
   const second = await memory.remember({
     scope: { type: "user", id: "alice" },
     kind: "preference",
     content: "Alice prefers concise Chinese replies.",
     importance: 0.9,
+    source: "claude",
+    tags: ["claude"],
+    metadata: { sessionId: "c2", projectPath: "/repo" },
   });
 
   // Should have merged: same id, updated importance
   assert.equal(first.id, second.id);
   assert.equal(second.importance, 0.9);
+  assert.deepEqual(second.tags, ["codex", "claude"]);
+  assert.deepEqual(second.metadata, {
+    sessionId: "c1",
+    projectPath: "/repo",
+    sourceHistory: ["codex", "claude"],
+    markerHistory: [
+      {
+        source: "claude",
+        tags: ["claude"],
+        metadata: { sessionId: "c2", projectPath: "/repo" },
+      },
+    ],
+  });
   const all = await memory.list({ scopes: [{ type: "user", id: "alice" }] });
   assert.equal(all.length, 1);
+});
+
+test("sqlite stores concurrent writes from separate instances without clobbering", async () => {
+  const root = await mkdtemp(join(tmpdir(), "marvmem-sqlite-concurrent-"));
+  const path = join(root, "memory.sqlite");
+  const first = createMarvMem({ storage: { backend: "sqlite", path } });
+  const second = createMarvMem({ storage: { backend: "sqlite", path } });
+
+  await Promise.all([
+    first.remember({
+      scope: { type: "agent", id: "codex" },
+      kind: "note",
+      content: "Codex wrote the release note.",
+      source: "codex",
+    }),
+    second.remember({
+      scope: { type: "agent", id: "claude" },
+      kind: "note",
+      content: "Claude wrote the migration note.",
+      source: "claude",
+    }),
+  ]);
+
+  const reader = createMarvMem({ storage: { backend: "sqlite", path } });
+  const all = await reader.list();
+  assert.equal(all.length, 2);
+  assert.deepEqual(all.map((record) => record.source).sort(), ["claude", "codex"]);
 });
 
 test("update modifies an existing record", async () => {

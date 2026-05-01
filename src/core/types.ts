@@ -90,6 +90,8 @@ export type MemoryListOptions = {
 export interface MemoryStore {
   load(): Promise<MemoryRecord[]>;
   save(records: MemoryRecord[]): Promise<void>;
+  upsert?(record: MemoryRecord): Promise<void>;
+  delete?(id: string): Promise<void>;
 }
 
 export function normalizeScope(scope: MemoryScope): MemoryScope {
