@@ -1,3 +1,4 @@
+.DS_Store
 .marvmem/
 dist/
 node_modules/
