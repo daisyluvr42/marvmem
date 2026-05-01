@@ -70,8 +70,8 @@ export function resolveContextScopes(context: MemoryContext): ResolvedScopes {
     recallScopes.push({ type: "user", id: context.userId, weight: 1.05 });
   }
 
-  if (context.agentId) {
-    recallScopes.push({ type: "agent", id: context.agentId, weight: 1.0 });
+  for (const agentId of uniqueAgentIds(context)) {
+    recallScopes.push({ type: "agent", id: agentId, weight: 1.0 });
   }
 
   if (context.sessionId) {
@@ -106,6 +106,13 @@ export function filterScopesByTargets(
 
   const targetSet = new Set<string>(targets);
   return recallScopes.filter((scope) => targetSet.has(scope.type));
+}
+
+function uniqueAgentIds(context: MemoryContext): string[] {
+  const ids = [context.agentId, ...(context.agentIds ?? [])]
+    .filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+    .map((id) => id.trim());
+  return [...new Set(ids)];
 }
 
 // ---------------------------------------------------------------------------

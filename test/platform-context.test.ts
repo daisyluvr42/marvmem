@@ -120,6 +120,19 @@ describe("resolveContextScopes", () => {
     assert.ok(!types.includes("agent"));
     assert.ok(!types.includes("session"));
   });
+
+  it("adds multiple agent scopes without changing the write scope", () => {
+    const result = resolveContextScopes({
+      projectId: "proj_1",
+      agentId: "codex",
+      agentIds: ["claude", "codex"],
+    });
+    assert.deepStrictEqual(result.writeScope, { type: "project", id: "proj_1" });
+    assert.deepStrictEqual(
+      result.recallScopes.filter((scope) => scope.type === "agent").map((scope) => scope.id),
+      ["codex", "claude"],
+    );
+  });
 });
 
 describe("filterScopesByTargets", () => {
@@ -176,5 +189,11 @@ describe("recordBelongsToProject", () => {
 
   it("is case-insensitive", () => {
     assert.ok(recordBelongsToProject({ scope: { type: "repo", id: "Proj_1::Repo_A" } }, ctx));
+  });
+
+  it("can include explicitly shared agent scopes", () => {
+    const sharedCtx = { ...ctx, agentIds: ["codex", "claude"] };
+    assert.ok(recordBelongsToProject({ scope: { type: "agent", id: "claude" } }, sharedCtx));
+    assert.ok(!recordBelongsToProject({ scope: { type: "agent", id: "antigravity" } }, sharedCtx));
   });
 });

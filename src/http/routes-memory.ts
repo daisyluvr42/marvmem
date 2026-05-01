@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { RequestContext } from "./server.js";
 import { bindAuthorizedContext, json, readBody } from "./server.js";
+import { memoryContextFromQuery } from "./scope-context.js";
 
 export async function handleMemoryRoutes(
   req: IncomingMessage,
@@ -40,9 +41,10 @@ export async function handleMemoryRoutes(
   if (path === "/v1/memories/batch" && req.method === "DELETE") {
     const body = (await readBody(req)) as Record<string, unknown>;
     const ids = Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === "string") : [];
+    const context = memoryContextFromQuery(ctx.projectId, url);
     let deleted = 0;
     for (const id of ids) {
-      if (await ctx.platform.deleteMemory({ context: { projectId: ctx.projectId } as any, id })) {
+      if (await ctx.platform.deleteMemory({ context, id })) {
         deleted++;
       }
     }
@@ -54,7 +56,7 @@ export async function handleMemoryRoutes(
   if (path === "/v1/memories/export" && req.method === "GET") {
     const limit = parseInt(url.searchParams.get("limit") ?? "1000", 10);
     const records = await ctx.platform.listMemories({
-      context: { projectId: ctx.projectId },
+      context: memoryContextFromQuery(ctx.projectId, url),
       limit: Math.min(limit, 5000),
     });
     json(res, 200, {
@@ -91,7 +93,7 @@ export async function handleMemoryRoutes(
     const kinds = url.searchParams.get("kinds")?.split(",").filter(Boolean);
     const tags = url.searchParams.get("tags")?.split(",").filter(Boolean);
     const records = await ctx.platform.listMemories({
-      context: { projectId: ctx.projectId },
+      context: memoryContextFromQuery(ctx.projectId, url),
       limit: Math.min(limit, 200),
       cursor,
       kinds,
@@ -109,7 +111,7 @@ export async function handleMemoryRoutes(
     return;
   }
   const id = idMatch[1]!;
-  const ref = { context: { projectId: ctx.projectId } as any, id };
+  const ref = { context: memoryContextFromQuery(ctx.projectId, url), id };
 
   // GET /v1/memories/:id/history
   if (path.endsWith("/history") && req.method === "GET") {

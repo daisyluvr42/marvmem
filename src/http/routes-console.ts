@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { RequestContext } from "./server.js";
 import { json, readBody } from "./server.js";
+import { memoryContextFromQuery, mergeBodyContext } from "./scope-context.js";
 
 /**
  * Routes for the Console control plane:
@@ -18,7 +19,7 @@ export async function handleConsoleRoutes(
   // GET /v1/stats
   if (path === "/v1/stats" && req.method === "GET") {
     const memories = await ctx.platform.listMemories({
-      context: { projectId: ctx.projectId },
+      context: memoryContextFromQuery(ctx.projectId, url),
       limit: 10_000,
     });
 
@@ -66,13 +67,10 @@ export async function handleConsoleRoutes(
   // POST /v1/inspect/recall
   if (path === "/v1/inspect/recall" && req.method === "POST") {
     const body = (await readBody(req)) as Record<string, unknown>;
-    const context = {
-      projectId: ctx.projectId,
-      ...(body.context && typeof body.context === "object" ? body.context as object : {}),
-    };
+    const context = mergeBodyContext(memoryContextFromQuery(ctx.projectId, url), body.context);
 
     const result = await ctx.platform.inspectRecall({
-      context: context as any,
+      context,
       message: (body.message as string) ?? "",
       recentMessages: body.recentMessages as string[] | undefined,
       toolContext: body.toolContext as string | undefined,

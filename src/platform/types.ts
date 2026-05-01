@@ -19,6 +19,7 @@ export type MemoryContext = {
   repoId?: string;
   userId?: string;
   agentId?: string;
+  agentIds?: string[];
   sessionId?: string;
   taskId?: string;
 };

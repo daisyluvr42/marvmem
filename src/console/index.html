@@ -610,10 +610,12 @@ const state = {
   apiKey: new URLSearchParams(window.location.search).get('apiKey') || localStorage.getItem('marvmem_api_key') || '',
   page: initialPage,
   connected: false,
+  scope: new URLSearchParams(window.location.search).get('scope') || localStorage.getItem('marvmem_scope') || 'shared',
 };
 
 const $ = (id) => document.getElementById(id);
 const API_BASE = window.location.origin;
+const AGENT_SCOPES = ['codex', 'claude', 'cursor', 'copilot', 'antigravity'];
 
 // ================================================================ API
 async function api(path, options = {}) {
@@ -690,7 +692,7 @@ async function render() {
 // ================================================================ Dashboard
 async function renderDashboard(el) {
   const [stats, evData] = await Promise.all([
-    api('/v1/stats'),
+    api(`/v1/stats?${scopeQuery()}`),
     api('/v1/events?limit=8'),
   ]);
 
@@ -708,7 +710,7 @@ async function renderDashboard(el) {
       <div class="stat-card">
         <div class="stat-label">Scopes</div>
         <div class="stat-value">${scopes.length}</div>
-        <div class="stat-sub">project · repo · user</div>
+        <div class="stat-sub">project · agent · repo</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Events</div>
@@ -758,6 +760,9 @@ async function renderExplorer(el) {
   el.innerHTML = `
     <div class="search-bar">
       <input class="input" id="explorer-search" placeholder="Search memories…" onkeydown="if(event.key==='Enter')searchMemories()" />
+      <select class="input" id="explorer-scope" style="width:180px" onchange="setScope(this.value);searchMemories()">
+        ${scopeOptions()}
+      </select>
       <select class="input" id="explorer-kind" style="width:150px" onchange="searchMemories()">
         <option value="">All types</option>
       </select>
@@ -780,24 +785,26 @@ async function searchMemories() {
     if (query) {
       const data = await api('/v1/recall', {
         method: 'POST',
-        body: JSON.stringify({ context: {}, message: query, inspect: true, maxChars: 8000 }),
+        body: JSON.stringify({ context: scopeContext(), message: query, inspect: true, maxChars: 8000 }),
       });
       memories = (data.hits || []).map(h => ({ ...h.record, _score: h.score, _reasons: h.reasons }));
     } else {
-      const data = await api('/v1/memories');
+      const data = await api(`/v1/memories?${scopeQuery()}`);
       memories = data?.memories || [];
     }
 
     if (!Array.isArray(memories)) memories = [];
 
-    // Populate kind filter once
     const kindSelect = $('explorer-kind');
-    if (kindSelect && kindSelect.options.length <= 1) {
+    if (kindSelect) {
+      const selectedKind = kindSelect.value;
+      kindSelect.innerHTML = '<option value="">All types</option>';
       [...new Set(memories.map(m => m.kind))].sort().forEach(k => {
         const opt = document.createElement('option');
         opt.value = k; opt.textContent = k;
         kindSelect.appendChild(opt);
       });
+      kindSelect.value = [...kindSelect.options].some(opt => opt.value === selectedKind) ? selectedKind : '';
     }
 
     const kindFilter = $('explorer-kind')?.value;
@@ -846,7 +853,7 @@ async function searchMemories() {
 async function deleteMemory(id) {
   if (!confirm('Delete this memory permanently?')) return;
   try {
-    const res = await fetch(`${API_BASE}/v1/memories/${id}`, {
+    const res = await fetch(`${API_BASE}/v1/memories/${id}?${scopeQuery()}`, {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${state.apiKey}` },
     });
@@ -860,6 +867,9 @@ async function renderRecall(el) {
   el.innerHTML = `
     <div class="search-bar">
       <input class="input" id="recall-query" placeholder="Enter query to inspect recall layers…" onkeydown="if(event.key==='Enter')inspectRecall()" />
+      <select class="input" id="recall-scope" style="width:180px" onchange="setScope(this.value)">
+        ${scopeOptions()}
+      </select>
       <button class="btn btn-primary" onclick="inspectRecall()">Inspect</button>
     </div>
     <div id="recall-results">
@@ -880,7 +890,7 @@ async function inspectRecall() {
   try {
     const data = await api('/v1/inspect/recall', {
       method: 'POST',
-      body: JSON.stringify({ context: {}, message: query }),
+      body: JSON.stringify({ context: scopeContext(), message: query }),
     });
 
     const layers = data.layers || {};
@@ -1099,6 +1109,46 @@ async function loadEvents() {
 }
 
 // ================================================================ Helpers
+function setScope(value) {
+  state.scope = value || 'shared';
+  localStorage.setItem('marvmem_scope', state.scope);
+  const explorerScope = $('explorer-scope');
+  if (explorerScope) explorerScope.value = state.scope;
+  const recallScope = $('recall-scope');
+  if (recallScope) recallScope.value = state.scope;
+}
+
+function scopeOptions() {
+  const options = [
+    ['shared', 'Shared store'],
+    ['project', 'Current project'],
+    ...AGENT_SCOPES.map(agent => [`agent:${agent}`, `Agent · ${agent}`]),
+  ];
+  return options.map(([value, label]) =>
+    `<option value="${esc(value)}"${state.scope === value ? ' selected' : ''}>${esc(label)}</option>`
+  ).join('');
+}
+
+function scopeQuery() {
+  const params = new URLSearchParams();
+  if (state.scope === 'shared') {
+    params.set('view', 'shared');
+  } else {
+    params.set('scope', state.scope || 'project');
+  }
+  return params.toString();
+}
+
+function scopeContext() {
+  if (state.scope === 'shared') {
+    return { agentIds: AGENT_SCOPES };
+  }
+  if (state.scope?.startsWith('agent:')) {
+    return { agentId: state.scope.slice('agent:'.length) };
+  }
+  return {};
+}
+
 function esc(s) {
   if (!s) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
