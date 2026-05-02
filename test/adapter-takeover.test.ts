@@ -8,6 +8,7 @@ import { join } from "node:path";
 import {
   applyHermesMemoryWrite,
   createHermesAgentMemoryAdapter,
+  createMarvInferencer,
   createOpenClawInferencer,
   createOpenClawMemoryAdapter,
   installHermesAgentMemoryTakeover,
@@ -304,6 +305,48 @@ test("OpenClaw inferencer honors runtime auth overrides", async () => {
   }
 });
 
+test("Marv adapter exposes the API-backed inferencer helper", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    if (typeof init?.body === "string") {
+      calls.push(init.body);
+    }
+    return new Response(
+      JSON.stringify({
+        output_text: "Marv runtime summary.",
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  }) as typeof fetch;
+
+  try {
+    const inferencer = createMarvInferencer({
+      api: "openai-responses",
+      model: "gpt-5-mini",
+      baseUrl: "http://127.0.0.1:4040",
+      apiKey: "test-key",
+    });
+
+    const result = await inferencer({
+      kind: "context",
+      system: "Summarize the current Marv session.",
+      prompt: "Marv has provider config and can call the API directly.",
+      maxChars: 320,
+    });
+
+    assert.deepEqual(result, { ok: true, text: "Marv runtime summary." });
+    assert.equal(calls.length, 1);
+    assert.match(calls[0] ?? "", /gpt-5-mini/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Hermes memory writes can be mirrored into MarvMem records", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
   const scope = { type: "agent", id: "hermes-tool" } as const;
@@ -397,15 +440,91 @@ test("Hermes install-plugin keeps bridge stderr visible in the generated plugin"
       root,
       "--storage-path",
       join(root, "marvmem.sqlite"),
+      "--inferencer",
+      JSON.stringify({
+        api: "openai-completions",
+        model: "gpt-4.1-mini",
+        baseUrl: "http://127.0.0.1:4141",
+        apiKey: "test-key",
+      }),
     ]);
 
     const pluginSource = await readFile(join(root, "plugins", "marvmem", "__init__.py"), "utf8");
 
+    assert.match(pluginSource, /import os/);
+    assert.match(pluginSource, /MARVMEM_INFERENCER/);
+    assert.match(pluginSource, /--inferencer/);
+    assert.match(pluginSource, /RECENT_MESSAGES_BY_SESSION/);
+    assert.match(pluginSource, /--recent-message/);
     assert.match(pluginSource, /stderr=subprocess\.PIPE/);
     assert.match(pluginSource, /text=True/);
     assert.match(pluginSource, /if completed\.returncode != 0:/);
     assert.match(pluginSource, /logger\.warning\("marvmem bridge exited with status %s: %s"/);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Hermes flush-session can use an API-backed inferencer", async () => {
+  const root = await mkdtemp(join(tmpdir(), "marvmem-hermes-inferencer-"));
+  const memoriesDir = join(root, "memories");
+  const storagePath = join(root, "marvmem.sqlite");
+  const requests: string[] = [];
+  let listening = false;
+  const server = createServer((req, res) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      requests.push(body);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: "Hermes distilled summary." } }] }));
+    });
+  });
+
+  try {
+    await mkdir(memoriesDir, { recursive: true });
+    await writeFile(join(memoriesDir, "MEMORY.md"), "", "utf8");
+    await writeFile(join(memoriesDir, "USER.md"), "", "utf8");
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    listening = true;
+    const address = server.address();
+    assert(address && typeof address === "object");
+
+    await execFileAsync(process.execPath, [
+      "--import",
+      "tsx",
+      join(process.cwd(), "src/bin/marvmem-hermes.ts"),
+      "flush-session",
+      "--hermes-home",
+      root,
+      "--storage-path",
+      storagePath,
+      "--inferencer",
+      JSON.stringify({
+        api: "openai-completions",
+        model: "gpt-4.1-mini",
+        baseUrl: `http://127.0.0.1:${address.port}`,
+        apiKey: "test-key",
+      }),
+      "--recent-message",
+      "user: Please remember the deployment boundary.",
+      "--recent-message",
+      "assistant: We aligned Hermes to API-backed distill.",
+    ]);
+
+    assert.equal(requests.length, 1);
+    assert.match(requests[0] ?? "", /deployment boundary/);
+
+    const memory = createMarvMem({ storagePath });
+    const context = await memory.active.read("context", { type: "agent", id: "hermes" });
+    assert.equal(context?.content, "Hermes distilled summary.");
+  } finally {
+    if (listening) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
     await rm(root, { recursive: true, force: true });
   }
 });

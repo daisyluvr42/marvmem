@@ -106,6 +106,15 @@ export class TaskContextManager {
     });
   }
 
+  async markEntriesSummarized(taskId: string, entryIds: string[], summary: string): Promise<number> {
+    const normalizedTaskId = taskId.trim();
+    const content = summary.trim();
+    if (!normalizedTaskId || !content || entryIds.length === 0) {
+      return 0;
+    }
+    return await this.options.store.markEntriesSummarized(normalizedTaskId, entryIds, content);
+  }
+
   async distillRollingSummary(input: {
     taskId: string;
     maxChars?: number;

@@ -1,8 +1,9 @@
+import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createMarvMem } from "../core/index.js";
-import type { MemoryScope, MemoryScopeType } from "../core/types.js";
+import { createMarvMem, type MarvMem } from "../core/index.js";
+import type { MemoryRecord, MemoryScope, MemoryScopeType } from "../core/types.js";
 
 export type SessionImportOptions = {
   sessionsRoot: string;
@@ -43,8 +44,10 @@ export async function runSessionImport(input: {
   });
   const result = await input.readSessions(input.options.sessionsRoot);
   let imported = 0;
+  let updated = 0;
   let skipped = 0;
   let messages = 0;
+  const source = `${input.agentKey}_session_import`;
 
   for (const session of result.sessions) {
     if (session.messages.length === 0 || !session.messages.some((message) => message.role === "user")) {
@@ -53,47 +56,79 @@ export async function runSessionImport(input: {
     }
 
     const taskId = taskIdForSession(input.agentKey, session.id);
-    const existing = await memory.task.get(taskId);
-    if (existing) {
+    const existingTask = await memory.task.get(taskId);
+    const existingRecord = await findSessionRecord({
+      memory,
+      scope: input.options.scope,
+      source,
+      sessionId: session.id,
+      taskId,
+    });
+    const importedMessageCount = existingTask
+      ? await importedMessageCountForSession({
+          memory,
+          taskId,
+          record: existingRecord,
+          maxCount: session.messages.length,
+        })
+      : 0;
+    const newMessages = session.messages.slice(importedMessageCount);
+    const refreshExistingRecord = existingRecord ? shouldRefreshSessionRecord(existingRecord) : false;
+
+    if (existingTask && existingRecord && newMessages.length === 0 && !refreshExistingRecord) {
       skipped += 1;
       continue;
     }
 
-    await memory.task.create({
-      taskId,
-      scope: input.options.scope,
-      title: titleForSession(input.agentLabel, session),
-      status: "completed",
-    });
-    for (const message of session.messages) {
+    if (!existingTask) {
+      await memory.task.create({
+        taskId,
+        scope: input.options.scope,
+        title: titleForSession(input.agentLabel, session),
+        status: "completed",
+      });
+    }
+    for (const message of newMessages) {
       await memory.task.appendEntry({
         taskId,
         role: message.role,
         content: message.content,
       });
     }
-    await memory.remember({
+    const state = await memory.task.distillRollingSummary({
+      taskId,
+      limit: Math.max(48, newMessages.length || session.messages.length),
+    });
+    const metadata = sessionRecordMetadata({
+      session,
+      taskId,
+      previous: existingRecord?.metadata,
+      resumed: Boolean(existingTask && newMessages.length > 0),
+    });
+    const patch = {
       scope: input.options.scope,
       kind: "note",
-      content: sessionRecordContent(input.agentLabel, input.agentKey, session),
-      summary: summaryForSession(input.agentLabel, session),
+      content: sessionRecordContent(input.agentLabel, input.agentKey, session, state?.rollingSummary),
+      summary: summaryForSession(input.agentLabel, session, state?.rollingSummary),
       confidence: 0.9,
       importance: 0.6,
-      source: `${input.agentKey}_session_import`,
+      source,
       tags: [input.agentKey, "session"],
-      metadata: {
-        sessionId: session.id,
-        sessionPath: session.path,
-        cwd: session.cwd,
-        timestamp: session.timestamp,
-        taskId,
-        messageCount: session.messages.length,
-        ...session.metadata,
-      },
-    });
+      metadata,
+    };
 
-    imported += 1;
-    messages += session.messages.length;
+    if (existingRecord) {
+      await memory.update(existingRecord.id, patch);
+    } else {
+      await memory.remember(patch);
+    }
+
+    if (existingTask) {
+      updated += 1;
+    } else {
+      imported += 1;
+    }
+    messages += newMessages.length;
   }
 
   process.stdout.write(
@@ -105,6 +140,7 @@ export async function runSessionImport(input: {
         files: result.files,
         sessions: result.sessions.length,
         imported,
+        updated,
         skipped,
         messages,
       },
@@ -281,13 +317,55 @@ function titleForSession(agentLabel: string, session: ImportedSession): string {
   return clamp(`${agentLabel} ${cwdName}: ${firstUser}`, 120);
 }
 
-function summaryForSession(agentLabel: string, session: ImportedSession): string {
-  const cwdName = session.cwd ? basename(session.cwd) : "session";
-  const firstUser = session.messages.find((message) => message.role === "user")?.content ?? session.id;
-  return clamp(`${agentLabel} session in ${cwdName}: ${firstUser}`, 220);
+async function findSessionRecord(input: {
+  memory: MarvMem;
+  scope: MemoryScope;
+  source: string;
+  sessionId: string;
+  taskId: string;
+}): Promise<MemoryRecord | null> {
+  const records = await input.memory.list({ scopes: [input.scope] });
+  return (
+    records.find((record) => {
+      const metadata = asObject(record.metadata);
+      return (
+        record.source === input.source &&
+        stringValue(metadata.sessionId) === input.sessionId &&
+        stringValue(metadata.taskId) === input.taskId
+      );
+    }) ?? null
+  );
 }
 
-function sessionRecordContent(agentLabel: string, agentKey: string, session: ImportedSession): string {
+async function importedMessageCountForSession(input: {
+  memory: MarvMem;
+  taskId: string;
+  record: MemoryRecord | null;
+  maxCount: number;
+}): Promise<number> {
+  const metadataCount = numberValue(input.record?.metadata?.messageCount);
+  if (metadataCount !== undefined) {
+    return clampCount(metadataCount, input.maxCount);
+  }
+  const entries = await input.memory.task.listEntries(input.taskId, { limit: input.maxCount });
+  return clampCount(entries.length, input.maxCount);
+}
+
+function clampCount(count: number, maxCount: number): number {
+  return Math.max(0, Math.min(Math.floor(count), maxCount));
+}
+
+function shouldRefreshSessionRecord(record: MemoryRecord): boolean {
+  return !stringValue(record.metadata?.lastImportedAt) || record.content.includes("\n\nTranscript:\n");
+}
+
+function summaryForSession(agentLabel: string, session: ImportedSession, rollingSummary?: string): string {
+  const cwdName = session.cwd ? basename(session.cwd) : "session";
+  const summary = rollingSummary?.trim() || session.messages.find((message) => message.role === "user")?.content || session.id;
+  return clamp(`${agentLabel} session in ${cwdName}: ${summary}`, 220);
+}
+
+function sessionRecordContent(agentLabel: string, agentKey: string, session: ImportedSession, rollingSummary?: string): string {
   const header = [
     `${agentLabel} session: ${session.id}`,
     session.timestamp ? `Started: ${session.timestamp}` : "",
@@ -296,8 +374,39 @@ function sessionRecordContent(agentLabel: string, agentKey: string, session: Imp
   ]
     .filter(Boolean)
     .join("\n");
-  const transcript = session.messages.map((message) => `${message.role}: ${message.content}`).join("\n\n");
-  return `${header}\n\nTranscript:\n${transcript}`;
+  const summary =
+    rollingSummary?.trim() ||
+    session.messages.map((message) => `${message.role}: ${message.content}`).join("\n\n");
+  return `${header}\n\nSession summary:\n${summary}`;
+}
+
+function sessionRecordMetadata(input: {
+  session: ImportedSession;
+  taskId: string;
+  previous?: Record<string, unknown>;
+  resumed: boolean;
+}): Record<string, unknown> {
+  const previous = asObject(input.previous);
+  const previousResumeCount = numberValue(previous.resumeCount) ?? 0;
+  return {
+    ...input.session.metadata,
+    sessionId: input.session.id,
+    sessionPath: input.session.path,
+    cwd: input.session.cwd,
+    timestamp: input.session.timestamp,
+    taskId: input.taskId,
+    messageCount: input.session.messages.length,
+    lastMessageHash: hashSessionMessage(input.session.messages.at(-1)),
+    lastImportedAt: new Date().toISOString(),
+    resumeCount: previousResumeCount + (input.resumed ? 1 : 0),
+  };
+}
+
+function hashSessionMessage(message: ImportedSessionMessage | undefined): string | undefined {
+  if (!message) {
+    return undefined;
+  }
+  return createHash("sha256").update(`${message.role}\0${message.content}`).digest("hex").slice(0, 16);
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

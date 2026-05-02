@@ -29,7 +29,7 @@ test("agent installer writes global Codex MCP config and instruction block", asy
   }
 });
 
-test("agent installer writes Cursor, Copilot, and Antigravity global MCP config files", async () => {
+test("agent installer writes Cursor, Copilot, and Antigravity MCP configs and instructions", async () => {
   const root = await mkdtemp(join(tmpdir(), "marvmem-agent-json-"));
   const storagePath = join(root, "memory.sqlite");
   const mcpPath = join(root, "marvmem-mcp.js");
@@ -55,6 +55,15 @@ test("agent installer writes Cursor, Copilot, and Antigravity global MCP config 
 
     const instructions = await readFile(join(root, ".copilot", "copilot-instructions.md"), "utf8");
     assert.match(instructions, /agent:copilot/);
+
+    const cursorRule = await readFile(join(root, ".cursor", "rules", "marvmem.mdc"), "utf8");
+    assert.match(cursorRule, /alwaysApply: true/);
+    assert.match(cursorRule, /agent:cursor/);
+    assert.match(cursorRule, /memory_session_commit/);
+
+    const antigravityRules = await readFile(join(root, ".gemini", "GEMINI.md"), "utf8");
+    assert.match(antigravityRules, /agent:antigravity/);
+    assert.match(antigravityRules, /memory_session_commit/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

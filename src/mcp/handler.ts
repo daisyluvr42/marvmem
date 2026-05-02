@@ -1,5 +1,5 @@
 import type { MarvMem } from "../core/memory.js";
-import type { MemoryScope } from "../core/types.js";
+import type { MemoryRecord, MemoryScope } from "../core/types.js";
 import { createMemoryRuntime, type MemoryRuntime } from "../runtime/index.js";
 
 type JsonRpcId = string | number | null;
@@ -7,6 +7,7 @@ const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2024-11-05"] as const;
 const SERVER_INSTRUCTIONS =
   "Use memory_recall when continuity or prior decisions matter. " +
   "Use memory_write for durable user preferences, facts, or explicit remember requests. " +
+  "Use memory_session_commit when the host agent has already distilled a session. " +
   "Use memory_task_append and memory_task_window for longer task-focused work.";
 
 export type MemoryToolDefinition = {
@@ -317,6 +318,194 @@ export function createMemoryToolSet(params: {
       },
     },
     {
+      name: "memory_session_commit",
+      description:
+        "Commit a host-distilled session summary. The host agent supplies the summary; MarvMem only stores and updates it.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          agent: { type: "string" },
+          sessionId: { type: "string" },
+          taskId: { type: "string" },
+          title: { type: "string" },
+          cwd: { type: "string" },
+          timestamp: { type: "string" },
+          messageCount: { type: "number" },
+          rollingSummary: { type: "string" },
+          scopeType: { type: "string" },
+          scopeId: { type: "string" },
+          entries: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                role: { type: "string" },
+                content: { type: "string" },
+                summary: { type: "string" },
+                tokenCount: { type: "number" },
+                metadata: {
+                  type: "object",
+                  additionalProperties: true,
+                },
+              },
+              required: ["role", "content"],
+            },
+          },
+          durableMemories: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                content: { type: "string" },
+                kind: { type: "string" },
+                summary: { type: "string" },
+                scopeType: { type: "string" },
+                scopeId: { type: "string" },
+                confidence: { type: "number" },
+                importance: { type: "number" },
+                source: { type: "string" },
+                tags: {
+                  type: "array",
+                  items: { type: "string" },
+                },
+                metadata: {
+                  type: "object",
+                  additionalProperties: true,
+                },
+              },
+              required: ["content"],
+            },
+          },
+        },
+        required: ["agent", "sessionId", "rollingSummary"],
+      },
+      execute: async (args) => {
+        const agent = expectString(args.agent, "agent");
+        const sessionId = expectString(args.sessionId, "sessionId");
+        const rollingSummary = expectString(args.rollingSummary, "rollingSummary");
+        const taskId = optionalString(args.taskId) ?? `${agent}:${sessionId}`;
+        const scope = parseScopeArgs(args, params.defaultScopes)?.[0];
+        if (!scope) {
+          throw new Error("scopeType and scopeId are required when no default scope is configured");
+        }
+        let task = await params.memory.task.get(taskId);
+        if (!task) {
+          task = await params.memory.task.create({
+            taskId,
+            scope,
+            title: optionalString(args.title) ?? `${agent} session ${sessionId}`,
+            status: "completed",
+          });
+        }
+
+        const existingRecord = await findSessionMemoryRecord(params.memory, scope, sessionId, taskId);
+        const existingMetadata = asRecord(existingRecord?.metadata) ?? {};
+        const previousMessageCount = expectNumber(existingMetadata.messageCount) ?? 0;
+        const messageCount = expectNumber(args.messageCount);
+        const entries = parseSessionCommitEntries(args.entries);
+        const shouldAppendEntries =
+          entries.length > 0 &&
+          (messageCount === undefined || messageCount > previousMessageCount || existingRecord === null);
+        const appendedEntries = [];
+        if (shouldAppendEntries) {
+          for (const entry of entries) {
+            const appended = await params.memory.task.appendEntry({
+              taskId,
+              role: entry.role,
+              content: entry.content,
+              summary: entry.summary,
+              tokenCount: entry.tokenCount,
+              metadata: entry.metadata,
+            });
+            if (appended) {
+              appendedEntries.push(appended);
+            }
+          }
+          await params.memory.task.markEntriesSummarized(
+            taskId,
+            appendedEntries.map((entry) => entry.id),
+            rollingSummary,
+          );
+        }
+
+        const state = await params.memory.task.setRollingSummary(taskId, rollingSummary);
+        const nowIso = new Date().toISOString();
+        const source = existingRecord?.source || `${agent}_session_commit`;
+        const sessionMetadata = compactRecord({
+          ...existingMetadata,
+          agent,
+          sessionId,
+          taskId,
+          cwd: optionalString(args.cwd) ?? optionalString(existingMetadata.cwd),
+          timestamp: optionalString(args.timestamp) ?? optionalString(existingMetadata.timestamp),
+          messageCount: Math.max(
+            previousMessageCount,
+            messageCount ?? previousMessageCount + appendedEntries.length,
+          ),
+          lastCommittedAt: nowIso,
+          commitSource: "host",
+          resumeCount:
+            (expectNumber(existingMetadata.resumeCount) ?? 0) +
+            (existingRecord && appendedEntries.length > 0 ? 1 : 0),
+        });
+        const sessionPatch = {
+          scope,
+          kind: "note",
+          content: buildSessionCommitContent({
+            agent,
+            sessionId,
+            taskId,
+            cwd: optionalString(args.cwd) ?? optionalString(existingMetadata.cwd),
+            timestamp: optionalString(args.timestamp) ?? optionalString(existingMetadata.timestamp),
+            rollingSummary,
+          }),
+          summary: clampText(`${agent} session ${sessionId}: ${rollingSummary}`, 220),
+          confidence: 0.9,
+          importance: 0.6,
+          source,
+          tags: [agent, "session"],
+          metadata: sessionMetadata,
+        };
+        const sessionRecord = existingRecord
+          ? await params.memory.update(existingRecord.id, sessionPatch)
+          : await params.memory.remember(sessionPatch);
+
+        const durableRecords = [];
+        for (const memory of parseDurableMemories(args.durableMemories)) {
+          durableRecords.push(
+            await params.memory.remember({
+              scope: memory.scope ?? scope,
+              kind: memory.kind,
+              content: memory.content,
+              summary: memory.summary,
+              confidence: memory.confidence,
+              importance: memory.importance,
+              source: memory.source ?? `${agent}_session_commit`,
+              tags: memory.tags,
+              metadata: compactRecord({
+                ...memory.metadata,
+                sessionId,
+                taskId,
+                cwd: optionalString(args.cwd),
+                origin: "host_session_commit",
+              }),
+            }),
+          );
+        }
+
+        return {
+          task,
+          state,
+          sessionRecord,
+          appendedEntries: appendedEntries.length,
+          durableRecords,
+        };
+      },
+    },
+    {
       name: "memory_task_append",
       description: "Append an entry into task context, creating the task when needed.",
       inputSchema: {
@@ -505,6 +694,136 @@ export function createMemoryMcpHandler(params: {
       return rpcError(id, -32601, `Unknown method: ${method}`);
     },
   };
+}
+
+type SessionCommitEntry = {
+  role: "user" | "assistant" | "system" | "tool";
+  content: string;
+  summary?: string;
+  tokenCount?: number;
+  metadata?: Record<string, unknown>;
+};
+
+type SessionCommitDurableMemory = {
+  scope?: MemoryScope;
+  kind: string;
+  content: string;
+  summary?: string;
+  confidence?: number;
+  importance?: number;
+  source?: string;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+};
+
+async function findSessionMemoryRecord(
+  memory: MarvMem,
+  scope: MemoryScope,
+  sessionId: string,
+  taskId: string,
+): Promise<MemoryRecord | null> {
+  const records = await memory.list({ scopes: [scope] });
+  return (
+    records.find((record) => {
+      const metadata = asRecord(record.metadata) ?? {};
+      return (
+        optionalString(metadata.sessionId) === sessionId &&
+        optionalString(metadata.taskId) === taskId &&
+        (record.tags.includes("session") || record.source.includes("_session_"))
+      );
+    }) ?? null
+  );
+}
+
+function parseSessionCommitEntries(value: unknown): SessionCommitEntry[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("entries must be an array");
+  }
+  return value.map((entry, index) => {
+    const record = asRecord(entry);
+    if (!record) {
+      throw new Error(`entries[${index}] must be an object`);
+    }
+    const role = expectString(record.role, `entries[${index}].role`);
+    if (role !== "user" && role !== "assistant" && role !== "system" && role !== "tool") {
+      throw new Error(`entries[${index}].role must be user, assistant, system, or tool`);
+    }
+    return {
+      role,
+      content: expectString(record.content, `entries[${index}].content`),
+      summary: optionalString(record.summary),
+      tokenCount: expectNumber(record.tokenCount),
+      metadata: asRecord(record.metadata) ?? undefined,
+    };
+  });
+}
+
+function parseDurableMemories(value: unknown): SessionCommitDurableMemory[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("durableMemories must be an array");
+  }
+  return value.map((entry, index) => {
+    const record = asRecord(entry);
+    if (!record) {
+      throw new Error(`durableMemories[${index}] must be an object`);
+    }
+    const scopeType = optionalString(record.scopeType);
+    const scopeId = optionalString(record.scopeId);
+    const scope = scopeType || scopeId
+      ? {
+          type: expectString(record.scopeType, `durableMemories[${index}].scopeType`) as MemoryScope["type"],
+          id: expectString(record.scopeId, `durableMemories[${index}].scopeId`),
+        }
+      : undefined;
+    return {
+      scope,
+      kind: optionalString(record.kind) ?? "note",
+      content: expectString(record.content, `durableMemories[${index}].content`),
+      summary: optionalString(record.summary),
+      confidence: expectNumber(record.confidence),
+      importance: expectNumber(record.importance),
+      source: optionalString(record.source),
+      tags: Array.isArray(record.tags)
+        ? record.tags.filter((tag): tag is string => typeof tag === "string" && Boolean(tag.trim()))
+        : undefined,
+      metadata: asRecord(record.metadata) ?? undefined,
+    };
+  });
+}
+
+function buildSessionCommitContent(input: {
+  agent: string;
+  sessionId: string;
+  taskId: string;
+  cwd?: string;
+  timestamp?: string;
+  rollingSummary: string;
+}): string {
+  return [
+    `${input.agent} session: ${input.sessionId}`,
+    input.timestamp ? `Started: ${input.timestamp}` : "",
+    input.cwd ? `Working directory: ${input.cwd}` : "",
+    `Task id: ${input.taskId}`,
+    "",
+    "Session summary:",
+    input.rollingSummary,
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+}
+
+function compactRecord(record: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined));
+}
+
+function clampText(text: string, maxChars: number): string {
+  return text.length <= maxChars ? text : text.slice(0, maxChars).trimEnd();
 }
 
 function requireScope(args: Record<string, unknown>): MemoryScope {

@@ -10,6 +10,7 @@ import type { MemoryScope } from "../core/types.js";
 import {
   createOpenClawInferencer,
   createOpenClawMemoryAdapter,
+  parseOpenClawInferencerConfig,
   type OpenClawInferencerConfig,
 } from "../adapters/openclaw.js";
 
@@ -30,8 +31,6 @@ type CliOptions = {
   storagePath: string;
   userMessage?: string;
 };
-
-type InferencerRequestAuth = NonNullable<NonNullable<OpenClawInferencerConfig["request"]>["auth"]>;
 
 const HELP = `marvmem-openclaw
 
@@ -64,6 +63,7 @@ Environment:
   MARVMEM_STORAGE_PATH
   MARVMEM_SCOPE_TYPE
   MARVMEM_SCOPE_ID
+  MARVMEM_INFERENCER
 
 Bridge-only options:
   --inferencer <json>       Resolved OpenClaw runtime model config used for MarvMem summaries
@@ -150,7 +150,9 @@ function parseCli(argv: string[], env: NodeJS.ProcessEnv): CliOptions {
   let storagePath = env.MARVMEM_STORAGE_PATH;
   let scopeType = env.MARVMEM_SCOPE_TYPE ?? "agent";
   let scopeId = env.MARVMEM_SCOPE_ID ?? "openclaw";
-  let inferencer: OpenClawInferencerConfig | undefined;
+  let inferencer = env.MARVMEM_INFERENCER
+    ? parseOpenClawInferencerConfig(env.MARVMEM_INFERENCER)
+    : undefined;
   let userMessage: string | undefined;
   let assistantMessage: string | undefined;
   const recentMessages: string[] = [];
@@ -174,7 +176,7 @@ function parseCli(argv: string[], env: NodeJS.ProcessEnv): CliOptions {
       continue;
     }
     if (arg === "--inferencer") {
-      inferencer = parseInferencerFlag(readFlagValue(argv, ++index, arg));
+      inferencer = parseOpenClawInferencerConfig(readFlagValue(argv, ++index, arg));
       continue;
     }
     if (arg === "--user-message") {
@@ -215,31 +217,6 @@ function readFlagValue(argv: string[], index: number, flag: string): string {
   return value;
 }
 
-function parseInferencerFlag(value: string): OpenClawInferencerConfig {
-  const parsed = JSON.parse(value);
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error("Invalid --inferencer payload");
-  }
-  const baseUrl =
-    "baseUrl" in parsed && typeof parsed.baseUrl === "string" ? parsed.baseUrl.trim() : "";
-  const model = "model" in parsed && typeof parsed.model === "string" ? parsed.model.trim() : "";
-  const api = "api" in parsed && typeof parsed.api === "string" ? parsed.api.trim() : "";
-  if (!baseUrl || !model || !api) {
-    throw new Error("Invalid --inferencer payload");
-  }
-  return {
-    api,
-    model,
-    baseUrl,
-    ...("apiKey" in parsed && typeof parsed.apiKey === "string" && parsed.apiKey.trim()
-      ? { apiKey: parsed.apiKey.trim() }
-      : {}),
-    ...("headers" in parsed ? { headers: coerceHeaders(parsed.headers) } : {}),
-    ...(parsed.authHeader === true ? { authHeader: true } : {}),
-    ...("request" in parsed ? { request: coerceRequest(parsed.request) } : {}),
-  };
-}
-
 function resolveOpenClawFiles(openclawHome: string) {
   const workspacePath = join(openclawHome, ".openclaw", "workspace");
   return {
@@ -249,71 +226,6 @@ function resolveOpenClawFiles(openclawHome: string) {
     dreamsPath: join(workspacePath, "DREAMS.md"),
     dailyDir: join(workspacePath, "memory"),
   };
-}
-
-function coerceHeaders(value: unknown): Record<string, string> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  const headers: Record<string, string> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    if (typeof entry !== "string") {
-      continue;
-    }
-    const normalizedKey = key.trim();
-    const normalizedValue = entry.trim();
-    if (!normalizedKey || !normalizedValue) {
-      continue;
-    }
-    headers[normalizedKey] = normalizedValue;
-  }
-  return Object.keys(headers).length > 0 ? headers : undefined;
-}
-
-function coerceRequest(value: unknown): OpenClawInferencerConfig["request"] {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  const request = value as Record<string, unknown>;
-  const auth = coerceAuth(request.auth);
-  const headers = coerceHeaders(request.headers);
-  if (!auth && !headers) {
-    return undefined;
-  }
-  return {
-    ...(headers ? { headers } : {}),
-    ...(auth ? { auth } : {}),
-  };
-}
-
-function coerceAuth(value: unknown): InferencerRequestAuth | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  const auth = value as Record<string, unknown>;
-  if (auth.mode === "provider-default") {
-    return { mode: "provider-default" };
-  }
-  if (auth.mode === "authorization-bearer" && typeof auth.token === "string" && auth.token.trim()) {
-    return { mode: "authorization-bearer", token: auth.token.trim() };
-  }
-  if (
-    auth.mode === "header" &&
-    typeof auth.headerName === "string" &&
-    auth.headerName.trim() &&
-    typeof auth.value === "string" &&
-    auth.value.trim()
-  ) {
-    return {
-      mode: "header",
-      headerName: auth.headerName.trim(),
-      value: auth.value.trim(),
-      ...(typeof auth.prefix === "string" && auth.prefix.trim()
-        ? { prefix: auth.prefix.trim() }
-        : {}),
-    };
-  }
-  return undefined;
 }
 
 async function installPlugin(options: CliOptions): Promise<void> {

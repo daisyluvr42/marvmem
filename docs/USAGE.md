@@ -316,6 +316,19 @@ node dist/bin/marvmem-hermes.js install-plugin \
 
 这个命令会先做一次初始化导入，然后把一个 Hermes plugin 写到 `~/.hermes/plugins/marvmem/`。后面 Hermes 每轮结束、原生 `memory` 工具写入、以及 session 结束时，都会自动把变更同步回 MarvMem，再把 `MEMORY.md` / `USER.md` 刷新出来。
 
+Hermes 这类本身已经有 API key / provider 配置的 agent，可以给 bridge 一个 API-backed inferencer，让 session 结束时的 distill 走 MarvMem 内部 inferencer，而不是 host-mediated MCP 工具：
+
+```bash
+export MARVMEM_INFERENCER='{"api":"openai-completions","model":"gpt-4.1-mini","baseUrl":"https://api.openai.com","apiKey":"..."}'
+node dist/bin/marvmem-hermes.js install-plugin \
+  --hermes-home ~/.hermes \
+  --storage-path ~/.hermes/marvmem.sqlite \
+  --scope-type agent \
+  --scope-id hermes
+```
+
+也可以把同一段 JSON 直接传给 `--inferencer`。安装后的 plugin 会继续读取 `MARVMEM_INFERENCER`，因此后续换模型或换 key 不需要重新安装 plugin。
+
 ### 接入 OpenClaw
 
 如果你要把 OpenClaw 的 markdown memory 交给 MarvMem 管理，同样直接用 `installOpenClawMemoryTakeover()`。当前实现会处理：
@@ -367,6 +380,27 @@ node dist/bin/marvmem-openclaw.js install-plugin \
 这个命令会先做一次初始化导入，然后把一个 OpenClaw plugin 写到 `~/.openclaw/plugins/marvmem/`。后面 OpenClaw 每轮开始前会先取 MarvMem 的 recall，上下文注入到 prompt 里；每轮结束后，再把这一轮对话写回 MarvMem，并刷新 `MEMORY.md` / `USER.md` / `DREAMS.md` 和当天的 `memory/YYYY-MM-DD.md`。
 
 如果当前 OpenClaw 会话本身已经配好了正常的 HTTP 模型 provider，这个 bridge 还会直接复用那一套 provider/model 来做 MarvMem 的 session summary。也就是说，OpenClaw 这条接法默认不需要再额外给 MarvMem 配一套总结模型。
+
+### 接入 Marv Runtime
+
+Marv 这类直接拥有 provider/key 的 runtime 可以走同一条 API-backed inferencer 路径。做法是在创建 MarvMem 时把 runtime model config 转成 inferencer：
+
+```ts
+import { createMarvMem } from "marvmem";
+import { createMarvInferencer } from "marvmem/adapters";
+
+const memory = createMarvMem({
+  storage: { backend: "sqlite", path: "~/.marvmem/marv.sqlite" },
+  inferencer: createMarvInferencer({
+    api: "openai-responses",
+    model: "gpt-5-mini",
+    baseUrl: "https://api.openai.com",
+    apiKey: process.env.OPENAI_API_KEY,
+  }),
+});
+```
+
+这样 active distill、task rolling summary、maintenance rebuild/calibration 都会直接用 runtime 提供的 API-backed inferencer。
 
 ## 10. Retrieval 的配置
 
@@ -449,7 +483,7 @@ import { createMemoryMcpHandler } from "marvmem/mcp";
 const handler = createMemoryMcpHandler({ memory });
 ```
 
-MCP handler 提供了 14 个工具：
+MCP handler 提供了 15 个工具：
 
 | 工具 | 功能 |
 |------|------|
@@ -463,10 +497,15 @@ MCP handler 提供了 14 个工具：
 | `memory_retrieve` | 执行完整的 retrieval stack |
 | `memory_active_get` | 读取 active context 和 experience |
 | `memory_active_distill` | 压缩 active memory |
+| `memory_session_commit` | 提交宿主 agent 已经 distill 好的 session summary |
 | `memory_task_append` | 追加 task entry（如果 task 不存在会自动创建） |
 | `memory_task_window` | 生成 task prompt 窗口 |
 | `memory_maintenance_calibrate` | 执行 experience 校准 |
 | `memory_maintenance_rebuild` | 重建 experience |
+
+`memory_session_commit` 是 Codex、Claude Code、Cursor、Copilot、Antigravity 这类宿主 agent 的推荐 session-flush 路径：宿主 agent 先用自己的当前模型生成 `rollingSummary` 和可选 `durableMemories`，MarvMem 只负责追加新增 `entries`、设置 task rolling summary、更新同一条 session memory。这个工具不会调用 LLM，也不需要 MarvMem 读取宿主 agent 的 OAuth token 或订阅凭据。
+
+OpenClaw、Hermes、Marv 这类 runtime / wrapper 自己能拿到 provider key 或 runtime model config 的 agent，推荐直接把 API-backed inferencer 传给 MarvMem。OpenClaw plugin 会自动复用当前 runtime model；Hermes bridge 支持 `MARVMEM_INFERENCER` / `--inferencer`；Marv runtime 可以用 `createMarvInferencer()` 创建同一类 inferencer。
 
 `memory_write` / `memory_update` 可以写入 `source`、`tags` 和 `metadata`。如果一条新记忆被合并到已有记录，tags 和 metadata 会合并，额外来源会保存在 `metadata.sourceHistory`，有冲突的标记会保存在 `metadata.markerHistory`。`memory_recall` 会在返回的 `hits[].record` 中保留完整记录，并在 prompt-ready 文本里显示每条命中的 source、tags 和 metadata 标记。
 
@@ -551,8 +590,8 @@ node dist/bin/marvmem-agent.js install antigravity
 默认会做三件事：
 
 - 安装全局 MCP 配置，所有 agent 指向同一个 `~/.marvmem/memory.sqlite`
-- 第一次运行时导入已有本地 session；重复运行会按已有 `taskId` 跳过
-- 给支持文件级全局指令的 agent 写入 MarvMem 使用规则
+- 第一次运行时导入已有本地 session；重复运行会按已有 `messageCount` 只追加新增消息
+- 给支持指令文件或规则文件的 agent 写入 MarvMem 使用规则
 
 各 agent 的默认落点：
 
@@ -560,9 +599,9 @@ node dist/bin/marvmem-agent.js install antigravity
 |-------|----------|----------|------------------|
 | Codex | `~/.codex/config.toml` | `~/.codex/AGENTS.md` | `~/.codex/sessions` |
 | Claude Code | `claude mcp add-json --scope user` | `~/.claude/CLAUDE.md` | `~/.claude/projects` |
-| Cursor | `~/.cursor/mcp.json` | 全局 User Rules 由 Cursor 设置界面管理；项目级可用 `AGENTS.md` | `~/Library/Application Support/Cursor/User` |
+| Cursor | `~/.cursor/mcp.json` | `~/.cursor/rules/marvmem.mdc` | `~/Library/Application Support/Cursor/User` |
 | Copilot CLI | `~/.copilot/mcp-config.json` | `~/.copilot/copilot-instructions.md` | `~/Library/Application Support/Code/User` |
-| Antigravity | `~/.gemini/antigravity/mcp_config.json` | 全局指令由 Antigravity 设置界面管理 | `~/.gemini/antigravity/brain` |
+| Antigravity | `~/.gemini/antigravity/mcp_config.json` | `~/.gemini/GEMINI.md` | `~/.gemini/antigravity/brain` |
 
 这个安装入口不会给 MCP server 设置默认 `agent:*` scope。这样 agent 调 `memory_recall` 时如果不传 scope，就可以从同一个 SQLite 里跨 agent 召回；需要写入新记忆或做窄查询时，再按指令使用当前 agent 的 scope，例如 `agent:codex`、`agent:claude`、`agent:cursor`、`agent:copilot` 或 `agent:antigravity`。
 
@@ -817,9 +856,11 @@ node dist/bin/marvmem-claude-import.js /path/to/sessions \
 导入结果会写入两类数据：
 
 - task context：`taskId` 形如 `<agent>:<session-id>`，保留用户/assistant transcript
-- palace memory：`source` 形如 `<agent>_session_import`，默认 tags 是 `<agent>` 和 `session`
+- palace memory：`source` 形如 `<agent>_session_import`，默认 tags 是 `<agent>` 和 `session`，内容是该 session 的滚动摘要
 
-palace memory 的 metadata 会保留 `sessionId`、`sessionPath`、`cwd`、`timestamp`、`taskId`、`messageCount`，以及各 importer 能读到的 agent 原始标记。
+重复导入同一个 session 时不会新建第二条 session memory。importer 会按已导入的 `messageCount` 只追加新增消息，然后更新同一个 task rolling summary 和 palace memory。几天后继续旧 session，也会落到同一个 `<agent>:<session-id>` 上。
+
+palace memory 的 metadata 会保留 `sessionId`、`sessionPath`、`cwd`、`timestamp`、`taskId`、`messageCount`、`lastImportedAt`、`lastMessageHash`、`resumeCount`，以及各 importer 能读到的 agent 原始标记。
 
 ## 13. 存储方式的选择
 

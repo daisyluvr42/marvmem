@@ -99,6 +99,15 @@ test("Codex import CLI stores session messages as task context and searchable me
     assert.match(records[0]?.content ?? "", /Codex session: session-1/);
     assert.match(records[0]?.content ?? "", /Remember that Codex imports should stay simple/);
     assert.doesNotMatch(records[0]?.content ?? "", /AGENTS\.md instructions/);
+    assert.doesNotMatch(records[0]?.content ?? "", /Transcript:/);
+    assert.equal(records[0]?.metadata?.messageCount, 2);
+
+    const staleMetadata = { ...records[0]?.metadata };
+    delete staleMetadata.lastImportedAt;
+    await memory.update(records[0]?.id ?? "", {
+      content: "Codex session: session-1\n\nTranscript:\nstale transcript",
+      metadata: staleMetadata,
+    });
 
     await execFileAsync(process.execPath, [
       "--import",
@@ -119,6 +128,101 @@ test("Codex import CLI stores session messages as task context and searchable me
     });
     assert.equal(rerunEntries.length, 2);
     assert.equal(rerunRecords.length, 1);
+    assert.doesNotMatch(rerunRecords[0]?.content ?? "", /Transcript:/);
+    assert.equal(typeof rerunRecords[0]?.metadata?.lastImportedAt, "string");
+
+    await writeFile(
+      sessionPath,
+      [
+        jsonl({
+          type: "session_meta",
+          payload: {
+            id: "session-1",
+            timestamp: "2026-05-01T00:00:00.000Z",
+            cwd: "/Users/daisyluvr/Documents/marvmem",
+          },
+        }),
+        jsonl({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: "# AGENTS.md instructions for /Users/daisyluvr/Documents/marvmem\n<environment_context></environment_context>",
+              },
+            ],
+          },
+        }),
+        jsonl({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Remember that Codex imports should stay simple." }],
+          },
+        }),
+        jsonl({
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "exec_command",
+          },
+        }),
+        jsonl({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Got it. I will keep the importer narrow." }],
+          },
+        }),
+        jsonl({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Continue this same Codex session tomorrow." }],
+          },
+        }),
+        jsonl({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "I will append only the new session messages." }],
+          },
+        }),
+      ].join("\n"),
+      "utf8",
+    );
+
+    await execFileAsync(process.execPath, [
+      "--import",
+      "tsx",
+      join(process.cwd(), "src/bin/marvmem-codex-import.ts"),
+      sessionsRoot,
+      "--storage-path",
+      storagePath,
+      "--scope-type",
+      "agent",
+      "--scope-id",
+      "codex-test",
+    ]);
+
+    const resumedEntries = await memory.task.listEntries("codex:session-1");
+    const resumedRecords = await memory.list({
+      scopes: [{ type: "agent", id: "codex-test" }],
+    });
+    assert.equal(resumedEntries.length, 4);
+    assert.match(resumedEntries[2]?.content ?? "", /tomorrow/);
+    assert.match(resumedEntries[3]?.content ?? "", /append only/);
+    assert.equal(resumedRecords.length, 1);
+    assert.match(resumedRecords[0]?.content ?? "", /Continue this same Codex session tomorrow/);
+    assert.equal(resumedRecords[0]?.metadata?.messageCount, 4);
+    assert.equal(resumedRecords[0]?.metadata?.resumeCount, 1);
+    assert.equal(typeof resumedRecords[0]?.metadata?.lastMessageHash, "string");
 
     const output = await readFile(storagePath, "utf8").catch(() => "");
     assert.equal(typeof output, "string");

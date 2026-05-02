@@ -60,6 +60,8 @@ export type OpenClawInferencerConfig = {
   };
 };
 
+type OpenClawInferencerRequestAuth = NonNullable<NonNullable<OpenClawInferencerConfig["request"]>["auth"]>;
+
 export function createOpenClawMemoryAdapter(params: {
   memory: MarvMem;
   runtime?: MemoryRuntime;
@@ -265,6 +267,31 @@ export async function installOpenClawMemoryTakeover(params: Parameters<typeof cr
   return { adapter, imported };
 }
 
+export function parseOpenClawInferencerConfig(value: string): OpenClawInferencerConfig {
+  const parsed = JSON.parse(value);
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Invalid inferencer payload");
+  }
+  const baseUrl =
+    "baseUrl" in parsed && typeof parsed.baseUrl === "string" ? parsed.baseUrl.trim() : "";
+  const model = "model" in parsed && typeof parsed.model === "string" ? parsed.model.trim() : "";
+  const api = "api" in parsed && typeof parsed.api === "string" ? parsed.api.trim() : "";
+  if (!baseUrl || !model || !api) {
+    throw new Error("Invalid inferencer payload");
+  }
+  return {
+    api,
+    model,
+    baseUrl,
+    ...("apiKey" in parsed && typeof parsed.apiKey === "string" && parsed.apiKey.trim()
+      ? { apiKey: parsed.apiKey.trim() }
+      : {}),
+    ...("headers" in parsed ? { headers: coerceInferencerHeaders(parsed.headers) } : {}),
+    ...(parsed.authHeader === true ? { authHeader: true } : {}),
+    ...("request" in parsed ? { request: coerceInferencerRequest(parsed.request) } : {}),
+  };
+}
+
 export function createOpenClawInferencer(config: OpenClawInferencerConfig): MemoryInferencer {
   const baseUrl = config.baseUrl.trim().replace(/\/+$/, "");
   const staticHeaders = normalizeHeaders(config.headers);
@@ -371,6 +398,71 @@ export function createOpenClawInferencer(config: OpenClawInferencerConfig): Memo
       };
     }
   };
+}
+
+function coerceInferencerHeaders(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const headers: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry !== "string") {
+      continue;
+    }
+    const normalizedKey = key.trim();
+    const normalizedValue = entry.trim();
+    if (!normalizedKey || !normalizedValue) {
+      continue;
+    }
+    headers[normalizedKey] = normalizedValue;
+  }
+  return Object.keys(headers).length > 0 ? headers : undefined;
+}
+
+function coerceInferencerRequest(value: unknown): OpenClawInferencerConfig["request"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const request = value as Record<string, unknown>;
+  const auth = coerceInferencerAuth(request.auth);
+  const headers = coerceInferencerHeaders(request.headers);
+  if (!auth && !headers) {
+    return undefined;
+  }
+  return {
+    ...(headers ? { headers } : {}),
+    ...(auth ? { auth } : {}),
+  };
+}
+
+function coerceInferencerAuth(value: unknown): OpenClawInferencerRequestAuth | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const auth = value as Record<string, unknown>;
+  if (auth.mode === "provider-default") {
+    return { mode: "provider-default" };
+  }
+  if (auth.mode === "authorization-bearer" && typeof auth.token === "string" && auth.token.trim()) {
+    return { mode: "authorization-bearer", token: auth.token.trim() };
+  }
+  if (
+    auth.mode === "header" &&
+    typeof auth.headerName === "string" &&
+    auth.headerName.trim() &&
+    typeof auth.value === "string" &&
+    auth.value.trim()
+  ) {
+    return {
+      mode: "header",
+      headerName: auth.headerName.trim(),
+      value: auth.value.trim(),
+      ...(typeof auth.prefix === "string" && auth.prefix.trim()
+        ? { prefix: auth.prefix.trim() }
+        : {}),
+    };
+  }
+  return undefined;
 }
 
 function resolveOpenClawPaths(files?: Partial<OpenClawMemoryPaths>): OpenClawMemoryPaths {

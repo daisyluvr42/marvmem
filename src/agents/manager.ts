@@ -102,6 +102,7 @@ export const AGENTS: Record<AgentId, AgentDefinition> = {
     importBin: "marvmem-cursor-import",
     defaultSessionsRoot: (home) => join(home, "Library", "Application Support", "Cursor", "User"),
     configPath: (home) => join(home, ".cursor", "mcp.json"),
+    instructionsPath: (home) => join(home, ".cursor", "rules", "marvmem.mdc"),
   },
   copilot: {
     label: "GitHub Copilot",
@@ -117,6 +118,7 @@ export const AGENTS: Record<AgentId, AgentDefinition> = {
     importBin: "marvmem-antigravity-import",
     defaultSessionsRoot: (home) => join(home, ".gemini", "antigravity", "brain"),
     configPath: (home) => join(home, ".gemini", "antigravity", "mcp_config.json"),
+    instructionsPath: (home) => join(home, ".gemini", "GEMINI.md"),
   },
 };
 
@@ -207,6 +209,9 @@ export async function installInstructions(
   const path = AGENTS[agent].instructionsPath?.(options.home);
   if (!path) {
     return false;
+  }
+  if (agent === "cursor") {
+    return await writeCursorRule(path, instructionBlock(agent));
   }
   return await writeMarkedBlock(path, instructionBlock(agent));
 }
@@ -404,7 +409,25 @@ function instructionBlock(agent: AgentId): string {
 Memory lookup:
 
 - If a task may depend on user-specific preferences, prior project decisions, repo conventions, or earlier troubleshooting history, query MarvMem before answering or editing. Prefer a lightweight \`memory_recall\` using the current request. For cross-agent continuity, omit scope first so MarvMem can search the shared user memory store; for narrow lookups or durable writes, use \`agent:${scopeId}\`. Skip this for trivial, fully self-contained requests.
+- After substantial work or when closing a session, distill the session with the current host model and call \`memory_session_commit\` with the rolling summary, any new transcript entries, and durable facts/preferences/decisions. Use \`agent:${scopeId}\` for the session memory unless a narrower project/repo scope is clearly available.
 <!-- marvmem-agent-instructions:end -->`;
+}
+
+async function writeCursorRule(path: string, block: string): Promise<boolean> {
+  const current = await readText(path);
+  if (current.trim()) {
+    return await writeMarkedBlock(path, block);
+  }
+  return await writeMarkedBlock(
+    path,
+    `---
+description: MarvMem host-mediated memory workflow
+globs:
+alwaysApply: true
+---
+
+${block}`,
+  );
 }
 
 async function writeMarkedBlock(path: string, block: string): Promise<boolean> {

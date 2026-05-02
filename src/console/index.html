@@ -530,6 +530,44 @@ tr:hover td { background: var(--surface); }
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   line-height: 1.5;
 }
+.memory-actions { display: flex; gap: 6px; justify-content: flex-end; white-space: nowrap; }
+.memory-detail-row td { background: var(--surface); padding-top: 0; }
+.memory-detail {
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  background: var(--surface-card);
+  padding: 14px 16px;
+}
+.memory-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin-bottom: 14px;
+}
+.memory-detail-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 2px;
+}
+.memory-detail-value {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-1);
+  overflow-wrap: anywhere;
+}
+.memory-detail-content {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.memory-detail-block { margin-top: 14px; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 280px; }
 
 .loading {
@@ -548,6 +586,7 @@ tr:hover td { background: var(--surface); }
   .main { margin-left: 0; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .setup-grid { grid-template-columns: 1fr; }
+  .memory-detail-grid { grid-template-columns: 1fr; }
   .agent-toolbar { justify-content: flex-start; flex-wrap: wrap; }
 }
 </style>
@@ -611,6 +650,7 @@ const state = {
   page: initialPage,
   connected: false,
   scope: new URLSearchParams(window.location.search).get('scope') || localStorage.getItem('marvmem_scope') || 'shared',
+  expandedMemoryId: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -809,11 +849,14 @@ async function searchMemories() {
 
     const kindFilter = $('explorer-kind')?.value;
     if (kindFilter) memories = memories.filter(m => m.kind === kindFilter);
+    if (!memories.some(m => m.id === state.expandedMemoryId)) state.expandedMemoryId = null;
 
     if (memories.length === 0) {
       el.innerHTML = '<div class="empty-state"><div class="empty-icon">∅</div><div class="empty-text">No memories found</div></div>';
       return;
     }
+
+    const columns = query ? 6 : 5;
 
     el.innerHTML = `
       <div class="card">
@@ -823,23 +866,12 @@ async function searchMemories() {
         <div class="table-wrap">
           <table>
             <thead><tr>
-              <th>Kind</th><th>Content</th><th>Scope</th><th>Conf.</th>
+              <th>Kind</th><th>Content</th><th>Scope</th>
               ${query ? '<th>Score</th>' : ''}
               <th>Updated</th><th></th>
             </tr></thead>
             <tbody>
-              ${memories.map(m => `<tr>
-                <td><span class="tag tag-kind">${m.kind}</span></td>
-                <td>
-                  <div class="content-preview">${esc(m.content)}</div>
-                  ${m.tags?.length ? `<div class="tags" style="margin-top:5px">${m.tags.map(t => `<span class="tag tag-source">${t}</span>`).join('')}</div>` : ''}
-                </td>
-                <td><span class="tag tag-scope">${m.scope?.type}:${trunc(m.scope?.id, 10)}</span></td>
-                <td style="font-family:var(--mono);font-size:12px;color:${m.confidence >= 0.8 ? 'var(--emerald)' : 'var(--ochre)'}">${(m.confidence || 0).toFixed(2)}</td>
-                ${query ? `<td style="font-family:var(--mono);font-size:12px;color:var(--emerald)">${(m._score || 0).toFixed(3)}</td>` : ''}
-                <td style="font-size:11px;color:var(--ink-4);white-space:nowrap">${timeAgo(m.updatedAt)}</td>
-                <td><button class="btn btn-sm btn-danger" onclick="deleteMemory('${m.id}')">Delete</button></td>
-              </tr>`).join('')}
+              ${memories.map(m => renderMemoryRow(m, query, columns)).join('')}
             </tbody>
           </table>
         </div>
@@ -848,6 +880,71 @@ async function searchMemories() {
   } catch (err) {
     el.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠</div><div class="empty-text">${esc(err.message)}</div></div>`;
   }
+}
+
+function renderMemoryRow(memory, query, columns) {
+  const expanded = memory.id === state.expandedMemoryId;
+  return `
+    <tr>
+      <td><span class="tag tag-kind">${esc(memory.kind)}</span></td>
+      <td>
+        <div class="content-preview">${esc(memory.content)}</div>
+        ${memory.tags?.length ? `<div class="tags" style="margin-top:5px">${memory.tags.map(t => `<span class="tag tag-source">${esc(t)}</span>`).join('')}</div>` : ''}
+      </td>
+      <td><span class="tag tag-scope">${esc(memory.scope?.type)}:${esc(trunc(memory.scope?.id, 10))}</span></td>
+      ${query ? `<td style="font-family:var(--mono);font-size:12px;color:var(--emerald)">${(memory._score || 0).toFixed(3)}</td>` : ''}
+      <td style="font-size:11px;color:var(--ink-4);white-space:nowrap">${timeAgo(memory.updatedAt)}</td>
+      <td>
+        <div class="memory-actions">
+          <button class="btn btn-sm" data-memory-id="${esc(memory.id)}" onclick="toggleMemoryDetail(this.dataset.memoryId)">${expanded ? 'Hide' : 'Detail'}</button>
+          <button class="btn btn-sm btn-danger" data-memory-id="${esc(memory.id)}" onclick="deleteMemory(this.dataset.memoryId)">Delete</button>
+        </div>
+      </td>
+    </tr>
+    ${expanded ? renderMemoryDetail(memory, query, columns) : ''}
+  `;
+}
+
+function renderMemoryDetail(memory, query, columns) {
+  const metadata = memory.metadata && Object.keys(memory.metadata).length > 0
+    ? JSON.stringify(memory.metadata, null, 2)
+    : '';
+  const reasons = memory._reasons
+    ? Object.entries(memory._reasons).map(([key, value]) => `${key}: ${Number(value).toFixed(3)}`).join(' · ')
+    : '';
+
+  return `
+    <tr class="memory-detail-row">
+      <td colspan="${columns}">
+        <div class="memory-detail">
+          <div class="memory-detail-grid">
+            <div><div class="memory-detail-label">ID</div><div class="memory-detail-value">${esc(memory.id)}</div></div>
+            <div><div class="memory-detail-label">Scope</div><div class="memory-detail-value">${esc(memory.scope?.type)}:${esc(memory.scope?.id)}</div></div>
+            <div><div class="memory-detail-label">Source</div><div class="memory-detail-value">${esc(memory.source || '—')}</div></div>
+            <div><div class="memory-detail-label">Kind</div><div class="memory-detail-value">${esc(memory.kind)}</div></div>
+            <div><div class="memory-detail-label">Confidence</div><div class="memory-detail-value">${(memory.confidence || 0).toFixed(2)}</div></div>
+            <div><div class="memory-detail-label">Importance</div><div class="memory-detail-value">${(memory.importance || 0).toFixed(2)}</div></div>
+            <div><div class="memory-detail-label">Created</div><div class="memory-detail-value">${esc(memory.createdAt ? new Date(memory.createdAt).toLocaleString() : '—')}</div></div>
+            <div><div class="memory-detail-label">Updated</div><div class="memory-detail-value">${esc(memory.updatedAt ? new Date(memory.updatedAt).toLocaleString() : '—')}</div></div>
+            ${query ? `<div><div class="memory-detail-label">Score</div><div class="memory-detail-value">${(memory._score || 0).toFixed(3)}</div></div>` : ''}
+          </div>
+          ${memory.summary ? `<div class="memory-detail-block"><div class="memory-detail-label">Summary</div><div class="memory-detail-content">${esc(memory.summary)}</div></div>` : ''}
+          <div class="memory-detail-block">
+            <div class="memory-detail-label">Content</div>
+            <div class="memory-detail-content">${esc(memory.content)}</div>
+          </div>
+          ${metadata ? `<div class="memory-detail-block"><div class="memory-detail-label">Metadata</div><div class="memory-detail-content">${esc(metadata)}</div></div>` : ''}
+          ${memory.tags?.length ? `<div class="memory-detail-block"><div class="memory-detail-label">Tags</div><div class="tags" style="margin-top:5px">${memory.tags.map(t => `<span class="tag tag-source">${esc(t)}</span>`).join('')}</div></div>` : ''}
+          ${reasons ? `<div class="memory-detail-block"><div class="memory-detail-label">Reasons</div><div class="memory-detail-value">${esc(reasons)}</div></div>` : ''}
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function toggleMemoryDetail(id) {
+  state.expandedMemoryId = state.expandedMemoryId === id ? null : id;
+  searchMemories();
 }
 
 async function deleteMemory(id) {

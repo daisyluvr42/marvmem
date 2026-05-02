@@ -11,6 +11,11 @@ import {
   applyHermesMemoryWrite,
   createHermesAgentMemoryAdapter,
 } from "../adapters/hermes-agent.js";
+import {
+  createOpenClawInferencer,
+  parseOpenClawInferencerConfig,
+  type OpenClawInferencerConfig,
+} from "../adapters/openclaw.js";
 
 type Command =
   | "sync-home"
@@ -25,7 +30,9 @@ type CliOptions = {
   assistantMessage?: string;
   content?: string;
   hermesHome: string;
+  inferencer?: OpenClawInferencerConfig;
   oldText?: string;
+  recentMessages: string[];
   scope: MemoryScope;
   sessionId?: string;
   storagePath: string;
@@ -49,6 +56,7 @@ Shared options:
   --storage-path <path>   MarvMem SQLite path (default: <hermes-home>/marvmem.sqlite)
   --scope-type <type>     Scope type (default: agent)
   --scope-id <id>         Scope id (default: hermes)
+  --inferencer <json>     API-backed inferencer config used for MarvMem summaries
 
 Command options:
   after-turn:
@@ -58,6 +66,7 @@ Command options:
 
   flush-session:
     --session-id <id>
+    --recent-message <text>
 
   memory-write:
     --target <memory|user>
@@ -70,6 +79,7 @@ Environment:
   MARVMEM_STORAGE_PATH
   MARVMEM_SCOPE_TYPE
   MARVMEM_SCOPE_ID
+  MARVMEM_INFERENCER
 `;
 
 async function main(): Promise<void> {
@@ -79,7 +89,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  const memory = createMarvMem({ storagePath: options.storagePath });
+  const memory = createMarvMem({
+    storagePath: options.storagePath,
+    ...(options.inferencer ? { inferencer: createOpenClawInferencer(options.inferencer) } : {}),
+  });
   const adapter = createHermesAgentMemoryAdapter({
     memory,
     defaultScopes: [options.scope],
@@ -104,6 +117,20 @@ async function main(): Promise<void> {
   }
 
   if (options.command === "flush-session") {
+    if (options.recentMessages.length > 0) {
+      const sessionSummary = options.recentMessages
+        .map((message) => message.trim())
+        .filter(Boolean)
+        .join("\n");
+      if (sessionSummary) {
+        await memory.active.distillContext({
+          scope: options.scope,
+          sessionSummary,
+        });
+      }
+      await adapter.syncProjection();
+      return;
+    }
     await adapter.flushSession();
     return;
   }
@@ -142,9 +169,13 @@ function parseCli(argv: string[], env: NodeJS.ProcessEnv): CliOptions {
   let storagePath = env.MARVMEM_STORAGE_PATH;
   let scopeType = env.MARVMEM_SCOPE_TYPE ?? "agent";
   let scopeId = env.MARVMEM_SCOPE_ID ?? "hermes";
+  let inferencer = env.MARVMEM_INFERENCER
+    ? parseOpenClawInferencerConfig(env.MARVMEM_INFERENCER)
+    : undefined;
   let sessionId: string | undefined;
   let userMessage: string | undefined;
   let assistantMessage: string | undefined;
+  const recentMessages: string[] = [];
   let action: "add" | "replace" | "remove" | undefined;
   let target: "memory" | "user" | undefined;
   let content: string | undefined;
@@ -168,6 +199,10 @@ function parseCli(argv: string[], env: NodeJS.ProcessEnv): CliOptions {
       scopeId = readFlagValue(argv, ++index, arg);
       continue;
     }
+    if (arg === "--inferencer") {
+      inferencer = parseOpenClawInferencerConfig(readFlagValue(argv, ++index, arg));
+      continue;
+    }
     if (arg === "--session-id") {
       sessionId = readFlagValue(argv, ++index, arg);
       continue;
@@ -178,6 +213,10 @@ function parseCli(argv: string[], env: NodeJS.ProcessEnv): CliOptions {
     }
     if (arg === "--assistant-message") {
       assistantMessage = readFlagValue(argv, ++index, arg);
+      continue;
+    }
+    if (arg === "--recent-message") {
+      recentMessages.push(readFlagValue(argv, ++index, arg));
       continue;
     }
     if (arg === "--target") {
@@ -213,7 +252,9 @@ function parseCli(argv: string[], env: NodeJS.ProcessEnv): CliOptions {
     assistantMessage,
     content,
     hermesHome,
+    inferencer,
     oldText,
+    recentMessages,
     scope: {
       type: scopeType as MemoryScope["type"],
       id: scopeId,
@@ -262,13 +303,17 @@ async function installPlugin(options: CliOptions): Promise<void> {
     join(pluginDir, "__init__.py"),
     buildPluginModule({
       hermesHome: options.hermesHome,
+      inferencer: options.inferencer,
       storagePath: options.storagePath,
       scope: options.scope,
     }),
     "utf8",
   );
 
-  const memory = createMarvMem({ storagePath: options.storagePath });
+  const memory = createMarvMem({
+    storagePath: options.storagePath,
+    ...(options.inferencer ? { inferencer: createOpenClawInferencer(options.inferencer) } : {}),
+  });
   const adapter = createHermesAgentMemoryAdapter({
     memory,
     defaultScopes: [options.scope],
@@ -294,6 +339,7 @@ provides_hooks:
 
 function buildPluginModule(input: {
   hermesHome: string;
+  inferencer?: OpenClawInferencerConfig;
   storagePath: string;
   scope: MemoryScope;
 }): string {
@@ -301,6 +347,7 @@ function buildPluginModule(input: {
   const nodePath = process.execPath;
   return `import json
 import logging
+import os
 import subprocess
 
 logger = logging.getLogger(__name__)
@@ -311,6 +358,9 @@ HERMES_HOME = ${JSON.stringify(input.hermesHome)}
 STORAGE_PATH = ${JSON.stringify(input.storagePath)}
 SCOPE_TYPE = ${JSON.stringify(input.scope.type)}
 SCOPE_ID = ${JSON.stringify(input.scope.id)}
+INFERENCER = os.environ.get("MARVMEM_INFERENCER") or ${JSON.stringify(input.inferencer ? JSON.stringify(input.inferencer) : "")}
+MAX_RECENT_MESSAGES = 24
+RECENT_MESSAGES_BY_SESSION = {}
 
 def _run(*args):
     try:
@@ -332,16 +382,29 @@ def _run(*args):
             logger.warning("marvmem bridge exited with status %s", completed.returncode)
 
 def _base_args():
-    return [
+    args = [
         "--hermes-home", HERMES_HOME,
         "--storage-path", STORAGE_PATH,
         "--scope-type", SCOPE_TYPE,
         "--scope-id", SCOPE_ID,
     ]
+    if INFERENCER:
+        args.extend(["--inferencer", INFERENCER])
+    return args
+
+def _remember_turn(session_id, user_message, assistant_response):
+    key = str(session_id or "default")
+    messages = RECENT_MESSAGES_BY_SESSION.setdefault(key, [])
+    if user_message:
+        messages.append("user: " + str(user_message).strip())
+    if assistant_response:
+        messages.append("assistant: " + str(assistant_response).strip())
+    del messages[:-MAX_RECENT_MESSAGES]
 
 def post_llm_call(session_id="", user_message="", assistant_response="", **kwargs):
     if not user_message and not assistant_response:
         return
+    _remember_turn(session_id, user_message, assistant_response)
     _run(
         "after-turn",
         *_base_args(),
@@ -380,11 +443,10 @@ def post_tool_call(tool_name="", args=None, result="", **kwargs):
 def on_session_finalize(session_id=None, **kwargs):
     if not session_id:
         return
-    _run(
-        "flush-session",
-        *_base_args(),
-        "--session-id", session_id,
-    )
+    command = ["flush-session", *_base_args(), "--session-id", session_id]
+    for message in RECENT_MESSAGES_BY_SESSION.pop(str(session_id), []):
+        command.extend(["--recent-message", message])
+    _run(*command)
 
 def register(ctx):
     ctx.register_hook("post_llm_call", post_llm_call)
