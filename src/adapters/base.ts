@@ -33,6 +33,9 @@ export type GenericMemoryAdapter = {
   beforePrompt(input: MemoryAdapterPromptInput): Promise<{
     systemHint: string;
     injectedContext: string;
+    stableContext?: string;
+    dynamicContext?: string;
+    navigationContext?: string;
   }>;
   afterTurn(input: MemoryAdapterTurnInput): Promise<void>;
 };
@@ -42,6 +45,9 @@ export type SessionMemoryAdapter = {
   beforePrompt(input: MemoryAdapterPromptInput): Promise<{
     systemHint: string;
     injectedContext: string;
+    stableContext?: string;
+    dynamicContext?: string;
+    navigationContext?: string;
   }>;
   afterTurn(input: MemoryAdapterTurnInput): Promise<void>;
   flushSession(input?: {
@@ -79,6 +85,9 @@ export function createGenericMemoryAdapter(params: {
       return {
         systemHint: runtime.buildSystemHint(),
         injectedContext: recall.injectedContext,
+        stableContext: recall.stableContext,
+        dynamicContext: recall.dynamicContext,
+        navigationContext: recall.navigationContext,
       };
     },
     async afterTurn(input) {
@@ -126,6 +135,9 @@ export function createSessionMemoryAdapter(params: {
       return {
         systemHint: runtime.buildSystemHint(),
         injectedContext: recall.injectedContext,
+        stableContext: recall.stableContext,
+        dynamicContext: recall.dynamicContext,
+        navigationContext: recall.navigationContext,
       };
     },
     async afterTurn(input) {

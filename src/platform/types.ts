@@ -115,11 +115,16 @@ export type RecallInspection = {
   context: MemoryContext;
   message: string;
   injectedContext: string;
+  stableContext?: string;
+  dynamicContext?: string;
+  navigationContext?: string;
   layers?: {
     active?: string;
     task?: string;
     retrieval?: string;
     palace?: string;
+    graph?: string;
+    navigation?: string;
   };
   hits?: MemorySearchHit[];
 };

@@ -61,6 +61,7 @@ export type MemorySearchHit = {
     entity?: number;
   };
   snippet: string;
+  evidence: MemoryEvidenceRef;
 };
 
 export type MemoryRecallOptions = MemorySearchOptions & {
@@ -69,16 +70,33 @@ export type MemoryRecallOptions = MemorySearchOptions & {
   maxChars?: number;
 };
 
+export type MemoryEvidenceRef = {
+  recordId: string;
+  scope: MemoryScope;
+  source: string;
+  tags: string[];
+  metadata?: Record<string, unknown>;
+  tools: Array<{
+    name: "memory_get" | "memory_task_window";
+    arguments: Record<string, string>;
+  }>;
+};
+
 export type MemoryRecallResult = {
   query: string;
   hits: MemorySearchHit[];
   injectedContext: string;
+  stableContext?: string;
+  dynamicContext?: string;
+  navigationContext?: string;
+  evidence?: MemoryEvidenceRef[];
   layers?: {
     active?: string;
     task?: string;
     palace?: string;
     retrieval?: string;
     graph?: string;
+    navigation?: string;
   };
 };
 

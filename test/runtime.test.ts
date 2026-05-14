@@ -62,6 +62,10 @@ test("builds recall context through the runtime layer", async () => {
   });
 
   assert.match(recall.injectedContext, /easy adapter APIs/);
+  assert.match(recall.navigationContext ?? "", /Memory navigation/);
+  assert.match(recall.stableContext ?? "", /memory_get/);
+  assert.match(recall.dynamicContext ?? "", /easy adapter APIs/);
+  assert.equal(recall.layers?.navigation, recall.navigationContext);
 });
 
 test("optional LLM proposal extractor can capture structured memories", async () => {

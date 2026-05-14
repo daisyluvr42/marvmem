@@ -15,6 +15,7 @@ import {
   normalizeScope,
   scopeKey,
   type MemoryInput,
+  type MemoryEvidenceRef,
   type MemoryListOptions,
   type MemoryRecallOptions,
   type MemoryRecallResult,
@@ -405,6 +406,7 @@ export class MarvMem {
         score,
         reasons: { lexical, hash, recency, importance, scope, entity },
         snippet: buildSnippet(record.content, queryTokens),
+        evidence: buildEvidenceRef(record),
       });
     }
 
@@ -417,15 +419,39 @@ export class MarvMem {
     const query = buildRecallQuery(options.query, options.recentMessages);
     const hits = await this.search(query, options);
     const graphContext = await this.formatEntityGraphContext(query, hits);
-    const injectedContext = [formatRecallContext(hits, options.maxChars ?? 4_000), graphContext]
+    const navigationContext = formatMemoryNavigation(
+      hits.map((hit) => hit.record),
+      Math.min(1_200, Math.max(0, options.maxChars ?? 1_200)),
+    );
+    const dynamicContext = [formatRecallContext(hits, options.maxChars ?? 4_000), graphContext]
       .filter(Boolean)
       .join("\n\n");
     return {
       query,
       hits,
-      injectedContext,
-      layers: graphContext ? { graph: graphContext } : undefined,
+      injectedContext: dynamicContext,
+      dynamicContext: dynamicContext || undefined,
+      navigationContext: navigationContext || undefined,
+      evidence: hits.map((hit) => hit.evidence),
+      layers: graphContext || navigationContext
+        ? { graph: graphContext || undefined, navigation: navigationContext || undefined }
+        : undefined,
     };
+  }
+
+  async buildNavigation(options: {
+    scopes?: MemoryScope[];
+    maxItems?: number;
+    maxChars?: number;
+  } = {}): Promise<string> {
+    const records = await this.list({ scopes: options.scopes });
+    const items = records
+      .toSorted((left, right) => {
+        const importance = right.importance - left.importance;
+        return importance !== 0 ? importance : right.updatedAt.localeCompare(left.updatedAt);
+      })
+      .slice(0, options.maxItems ?? 6);
+    return formatMemoryNavigation(items, options.maxChars ?? 1_200);
   }
 
   /** Enqueue a mutating operation so read-modify-write sequences don't interleave. */
@@ -796,7 +822,7 @@ export function formatRecallContext(hits: MemorySearchHit[], maxChars: number): 
   ];
   let used = lines.join("\n").length;
   for (const hit of hits) {
-    const markers = [`source: ${hit.record.source}`];
+    const markers = [`id: ${hit.record.id}`, `source: ${hit.record.source}`];
     if (hit.record.tags.length > 0) {
       markers.push(`tags: ${hit.record.tags.join(", ")}`);
     }
@@ -815,4 +841,59 @@ export function formatRecallContext(hits: MemorySearchHit[], maxChars: number): 
     used += block.length + 1;
   }
   return lines.join("\n").trim();
+}
+
+export function formatMemoryNavigation(records: MemoryRecord[], maxChars: number): string {
+  if (records.length === 0 || maxChars < 120) {
+    return "";
+  }
+  const lines = [
+    "Memory navigation:",
+    "Use memory_get(id) to inspect exact records; use memory_task_window for task-linked context.",
+    "",
+  ];
+  let used = lines.join("\n").length;
+  for (const record of records) {
+    const summary = (record.summary?.trim() || record.content.trim()).replace(/\s+/g, " ");
+    const taskId = stringMetadata(record.metadata, "taskId");
+    const taskLine = taskId ? ` task=memory_task_window(taskId=${taskId}, message=current query)` : "";
+    const line =
+      `- ${record.kind} ${record.scope.type}:${record.scope.id} id=${record.id} ` +
+      `get=memory_get(id=${record.id})${taskLine} summary=${summary}`;
+    if (used + line.length + 1 > maxChars) {
+      break;
+    }
+    lines.push(line);
+    used += line.length + 1;
+  }
+  return lines.length > 3 ? lines.join("\n").trim() : "";
+}
+
+function buildEvidenceRef(record: MemoryRecord): MemoryEvidenceRef {
+  const tools: MemoryEvidenceRef["tools"] = [
+    {
+      name: "memory_get",
+      arguments: { id: record.id },
+    },
+  ];
+  const taskId = stringMetadata(record.metadata, "taskId");
+  if (taskId) {
+    tools.push({
+      name: "memory_task_window",
+      arguments: { taskId, message: "<current query>" },
+    });
+  }
+  return {
+    recordId: record.id,
+    scope: { ...record.scope },
+    source: record.source,
+    tags: [...record.tags],
+    metadata: record.metadata ? { ...record.metadata } : undefined,
+    tools,
+  };
+}
+
+function stringMetadata(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }

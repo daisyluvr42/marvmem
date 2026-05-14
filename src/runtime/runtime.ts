@@ -51,6 +51,16 @@ export function createMemoryRuntime(params: {
             maxChars: Math.max(400, Math.floor(maxChars * 0.35)),
           })
         : null;
+      const shouldBuildNavigation =
+        retrievalRecall.hits.length > 0 ||
+        Boolean(activeLayer) ||
+        Boolean(taskWindow?.injectedContext);
+      const navigationLayer = palaceRecall.navigationContext || (shouldBuildNavigation
+        ? await params.memory.buildNavigation({
+            scopes,
+            maxChars: maxChars < 300 ? 0 : Math.min(1_200, Math.max(500, Math.floor(maxChars * 0.2))),
+          })
+        : "");
       const palaceLayer =
         params.memory.retrieval.backend === "builtin" &&
         params.memory.retrieval.usesRemoteEmbeddings
@@ -58,18 +68,24 @@ export function createMemoryRuntime(params: {
           : palaceRecall.injectedContext;
       const retrievalLayer =
         params.memory.retrieval.backend === "qmd" ? retrievalRecall.injectedContext : undefined;
+      const stableContext = [activeLayer, navigationLayer].filter(Boolean).join("\n\n").trim();
+      const dynamicContext = [taskWindow?.injectedContext, retrievalLayer, palaceLayer]
+        .filter(Boolean)
+        .join("\n\n")
+        .trim();
       return {
         ...palaceRecall,
-        injectedContext: [activeLayer, taskWindow?.injectedContext, retrievalLayer, palaceLayer]
-          .filter(Boolean)
-          .join("\n\n")
-          .trim(),
+        injectedContext: [stableContext, dynamicContext].filter(Boolean).join("\n\n").trim(),
+        stableContext: stableContext || undefined,
+        dynamicContext: dynamicContext || undefined,
+        navigationContext: navigationLayer || undefined,
         layers: {
           active: activeLayer || undefined,
           task: taskWindow?.injectedContext || undefined,
           retrieval: retrievalLayer,
           palace: palaceLayer || undefined,
           graph: palaceRecall.layers?.graph,
+          navigation: navigationLayer || undefined,
         },
       };
     },

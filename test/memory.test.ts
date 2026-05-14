@@ -30,6 +30,52 @@ test("remembers and searches scoped memories", async () => {
   assert.match(hits[0]!.record.content, /Alice prefers concise Chinese replies/);
 });
 
+test("search hits expose evidence refs for exact follow-up reads", async () => {
+  const memory = createMarvMem({ store: new InMemoryStore() });
+
+  const record = await memory.remember({
+    scope: { type: "task", id: "release" },
+    kind: "decision",
+    content: "Use a short release checklist with direct verification steps.",
+    source: "codex_session_commit",
+    tags: ["release"],
+    metadata: { taskId: "codex:release-1", sessionId: "s1" },
+  });
+
+  const hits = await memory.search("release checklist", {
+    scopes: [{ type: "task", id: "release" }],
+  });
+
+  assert.equal(hits[0]?.evidence.recordId, record.id);
+  assert.deepEqual(hits[0]?.evidence.tools[0], {
+    name: "memory_get",
+    arguments: { id: record.id },
+  });
+  assert.deepEqual(hits[0]?.evidence.tools[1], {
+    name: "memory_task_window",
+    arguments: { taskId: "codex:release-1", message: "<current query>" },
+  });
+});
+
+test("builds memory navigation from existing records", async () => {
+  const memory = createMarvMem({ store: new InMemoryStore() });
+
+  const record = await memory.remember({
+    scope: { type: "repo", id: "marvmem" },
+    kind: "lesson",
+    content: "Keep recall navigation lightweight and point back to exact records.",
+    importance: 0.9,
+  });
+
+  const navigation = await memory.buildNavigation({
+    scopes: [{ type: "repo", id: "marvmem" }],
+  });
+
+  assert.match(navigation, /Memory navigation/);
+  assert.match(navigation, new RegExp(`memory_get\\(id=${record.id}\\)`));
+  assert.match(navigation, /lightweight and point back to exact records/);
+});
+
 test("builds prompt-ready recall context", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
 

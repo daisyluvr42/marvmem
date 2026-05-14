@@ -110,7 +110,9 @@ test("memory_recall exposes record markers through MCP", async () => {
   assert.match(recall.injectedContext, /source: cursor_session_import/);
   assert.match(recall.injectedContext, /tags: cursor, session, release/);
   assert.match(recall.injectedContext, /"sessionId":"cursor-1"/);
+  assert.match(recall.navigationContext, /memory_get/);
   assert.equal(recall.hits?.[0]?.record.source, "cursor_session_import");
+  assert.equal(recall.hits?.[0]?.evidence?.tools?.[0]?.name, "memory_get");
   assert.deepEqual(recall.hits?.[0]?.record.metadata, {
     sessionId: "cursor-1",
     taskId: "cursor-session-cursor-1",

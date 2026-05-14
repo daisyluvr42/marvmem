@@ -192,6 +192,9 @@ export class MarvMemPlatformService implements PlatformMemoryService {
       context: input.context,
       message: input.message,
       injectedContext: result.injectedContext,
+      stableContext: result.stableContext,
+      dynamicContext: result.dynamicContext,
+      navigationContext: result.navigationContext,
       layers: result.layers,
       hits: result.hits,
     };

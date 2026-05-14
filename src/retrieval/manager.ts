@@ -216,8 +216,13 @@ export function formatRetrievalContext(hits: RetrievalHit[], maxChars: number): 
   const blocks: string[] = [];
   for (const hit of hits) {
     if (hit.source === "builtin" && hit.record) {
+      const markers = [`id ${hit.record.id}`, `source ${hit.record.source}`];
+      if (hit.record.tags.length > 0) {
+        markers.push(`tags ${hit.record.tags.join(", ")}`);
+      }
       blocks.push(
-        `- [${hit.record.kind}] ${hit.record.summary?.trim() || hit.record.content.trim()} (score ${hit.score.toFixed(2)})`,
+        `- [${hit.record.kind}] ${hit.record.summary?.trim() || hit.record.content.trim()} ` +
+          `(${markers.join("; ")}; score ${hit.score.toFixed(2)})`,
       );
       continue;
     }
