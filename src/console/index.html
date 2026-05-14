@@ -1068,7 +1068,7 @@ async function loadAgents(container) {
     </div>
 
     <div class="agent-toolbar">
-      <button class="btn" onclick="agentBulkAction('/v1/agents/import-all')">Import All</button>
+      <button class="btn" onclick="agentBulkAction('/v1/agents/import-all')">Sync Now</button>
       <button class="btn btn-primary" onclick="agentBulkAction('/v1/agents/install-all')">Install All</button>
       <button class="btn" onclick="loadAgents()">Refresh</button>
     </div>
@@ -1117,7 +1117,7 @@ function renderAgentCard(agent) {
         <div class="agent-path">${esc(agent.paths.sessionsRoot)}</div>
       </div>
       <div class="agent-actions">
-        <button class="btn btn-sm" onclick="agentAction('/v1/agents/import', '${agent.agent}')">Import</button>
+        <button class="btn btn-sm" onclick="agentAction('/v1/agents/import', '${agent.agent}')">Sync</button>
         <button class="btn btn-sm btn-primary" onclick="agentAction('/v1/agents/install', '${agent.agent}')">Install</button>
       </div>
     </div>

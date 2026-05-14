@@ -24,6 +24,7 @@ test("agent installer writes global Codex MCP config and instruction block", asy
     assert.equal(instructions.match(/marvmem-agent-instructions:start/g)?.length, 1);
     assert.match(instructions, /omit scope first/);
     assert.match(instructions, /agent:codex/);
+    assert.match(instructions, /memory_session_commit/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -175,6 +175,7 @@ describe("Console API routes", () => {
     assert.equal(res.status, 200);
     const html = await res.text();
     assert.ok(html.includes("MarvMem Console"));
+    assert.ok(html.includes("Sync Now"));
   });
 
   it("GET /console/ also serves index.html", async () => {

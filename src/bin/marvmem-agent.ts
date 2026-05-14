@@ -21,6 +21,7 @@ import { InMemoryInspectEventStore } from "../inspect/store.js";
 import { defaultMemoryMcpStoragePath } from "../mcp/stdio.js";
 import { MarvMemPlatformService } from "../platform/service.js";
 import { ProjectStore } from "../auth/project.js";
+import { startAgentImportScheduler } from "../agents/import-scheduler.js";
 import {
   ensureAgentServiceConfig,
   getAgentServiceStatus,
@@ -407,6 +408,18 @@ async function runServe(input: AgentServiceOptions): Promise<void> {
   });
 
   await server.listen();
+  startAgentImportScheduler({
+    agentOptions: {
+      home: input.home,
+      storagePath: config.storagePath,
+      mcpPath: config.mcpPath,
+    },
+    runOnStart: true,
+    onError(error) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`Agent session import failed: ${message}\n`);
+    },
+  });
   process.stdout.write(
     [
       "MarvMem agent service",

@@ -624,7 +624,7 @@ node dist/bin/marvmem-agent.js install copilot \
 |------|------|
 | `marvmem-agent install <agent\|all>` | 写入 MCP 配置、导入历史 session、写入全局指令 |
 | `marvmem-agent service <cmd>` | 安装、启动、停止、查询本地常驻控制台服务 |
-| `marvmem-agent serve` | LaunchAgent 使用的长跑 HTTP console 入口 |
+| `marvmem-agent serve` | LaunchAgent 使用的长跑 HTTP console 入口，并每 15 分钟增量导入本地 agent sessions |
 | `marvmem-agent ui` | 启动本地 Web 控制台 |
 | `marvmem-agent tui` | 启动终端控制台 |
 
@@ -662,6 +662,8 @@ macOS 上会写入用户级 LaunchAgent：
 ```
 
 它运行 `marvmem-agent serve`，使用同一个 `~/.marvmem/memory.sqlite` 和一枚稳定的本地 API key。这样重启机器后 console URL 不会因为临时进程退出而失效。
+
+`serve` 只做轻量兜底同步：它定时读取各 agent 的本地 session 文件并复用幂等 importer 写入 MarvMem，不会启动 Codex、Claude 或其它宿主 agent，也不会调用额外模型。高质量 session summary 仍然建议由宿主 agent 在重要工作或会话收尾时主动调用 `memory_session_commit`。
 
 常用命令：
 
@@ -703,7 +705,7 @@ node dist/bin/marvmem-agent.js ui
 - 默认 session 目录是否存在
 - 已导入到共享记忆库的 session memory / task 数量
 
-页面里的 `Install` / `Install All` 调用的就是 `marvmem-agent install` 同一套逻辑；`Import` / `Import All` 调用下面的 session 导入工具，同样写入同一个 `~/.marvmem/memory.sqlite`。
+页面里的 `Install` / `Install All` 调用的就是 `marvmem-agent install` 同一套逻辑；`Sync` / `Sync Now` 调用下面的 session 导入工具，同样写入同一个 `~/.marvmem/memory.sqlite`。
 
 如果默认端口已经被占用，换一个端口即可：
 
