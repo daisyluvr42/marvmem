@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { defaultMemoryMcpStoragePath } from "../mcp/stdio.js";
 import { openSqliteDatabase } from "../system/sqlite.js";
 
-export const AGENT_IDS = ["codex", "claude", "cursor", "copilot", "antigravity"] as const;
+export const AGENT_IDS = ["codex", "claude", "cursor", "copilot", "antigravity", "workbuddy"] as const;
 
 export type AgentId = (typeof AGENT_IDS)[number];
 
@@ -73,7 +73,7 @@ export type AgentStatus = {
 type AgentDefinition = {
   label: string;
   scopeId: string;
-  importBin: string;
+  importBin?: string;
   defaultSessionsRoot(home: string): string;
   configPath(home: string): string;
   instructionsPath?(home: string): string;
@@ -119,6 +119,12 @@ export const AGENTS: Record<AgentId, AgentDefinition> = {
     defaultSessionsRoot: (home) => join(home, ".gemini", "antigravity", "brain"),
     configPath: (home) => join(home, ".gemini", "antigravity", "mcp_config.json"),
     instructionsPath: (home) => join(home, ".gemini", "GEMINI.md"),
+  },
+  workbuddy: {
+    label: "WorkBuddy",
+    scopeId: "workbuddy",
+    defaultSessionsRoot: (home) => join(home, ".workbuddy"),
+    configPath: (home) => join(home, ".workbuddy", "mcp.json"),
   },
 };
 
@@ -175,7 +181,7 @@ export async function installAgent(
     await installMcp(agent, options);
     result.mcp = "installed";
   }
-  if (!options.skipImport) {
+  if (!options.skipImport && AGENTS[agent].importBin) {
     result.importSummary = await importSessions(agent, options);
     result.import = "imported";
   }
@@ -193,6 +199,9 @@ export async function importSessions(
 ): Promise<Record<string, unknown>> {
   const options = resolveAgentOptions(input);
   const config = AGENTS[agent];
+  if (!config.importBin) {
+    return { skipped: true, reason: "session import is not supported for this agent" };
+  }
   const importerPath = agentBinPath(config.importBin);
   const args = nodeScriptArgs(importerPath);
   args.push(options.sessionsRoot ?? config.defaultSessionsRoot(options.home));
@@ -271,6 +280,10 @@ async function installMcp(agent: AgentId, options: ResolvedAgentInstallOptions):
   }
   if (agent === "antigravity") {
     await writeJsonMcpConfig(AGENTS.antigravity.configPath(options.home), "antigravity", options);
+    return;
+  }
+  if (agent === "workbuddy") {
+    await writeJsonMcpConfig(AGENTS.workbuddy.configPath(options.home), "workbuddy", options);
     return;
   }
   await writeJsonMcpConfig(AGENTS.copilot.configPath(options.home), "copilot", options);
@@ -376,18 +389,24 @@ async function runClaudeMcpInstall(options: ResolvedAgentInstallOptions): Promis
 
 async function writeJsonMcpConfig(
   configPath: string,
-  format: "cursor" | "copilot" | "antigravity",
+  format: "cursor" | "copilot" | "antigravity" | "workbuddy",
   options: ResolvedAgentInstallOptions,
 ): Promise<void> {
   const config = await readJsonObject(configPath);
   const servers = asObject(config.mcpServers);
   servers.marvmem =
-    format === "cursor" || format === "antigravity"
+    format === "cursor" || format === "antigravity" || format === "workbuddy"
       ? {
           command: "node",
           args: [options.mcpPath],
           env: {
             MARVMEM_STORAGE_PATH: options.storagePath,
+            ...(format === "workbuddy"
+              ? {
+                  MARVMEM_SCOPE_TYPE: "agent",
+                  MARVMEM_SCOPE_ID: AGENTS.workbuddy.scopeId,
+                }
+              : {}),
           },
         }
       : {

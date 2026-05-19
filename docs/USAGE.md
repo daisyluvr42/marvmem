@@ -474,7 +474,7 @@ await memory.maintenance.deepConsolidate({
 有两种接法：
 
 - 自己写宿主：直接用 `createMemoryMcpHandler()`
-- 给 Codex、Claude Code、Cursor、Copilot 这类 MCP client 用：运行本地 `marvmem-mcp` stdio server
+- 给 Codex、Claude Code、Cursor、Copilot、WorkBuddy 这类 MCP client 用：运行本地 `marvmem-mcp` stdio server
 
 如果你需要把 MarvMem 嵌进自己的宿主，可以直接使用 MCP handler：
 
@@ -568,6 +568,32 @@ claude mcp add-json -s project marvmem '{"type":"stdio","command":"node","args":
 
 这条命令会在当前项目写入 `.mcp.json`。可以用 `claude mcp get marvmem` 确认 server 已连接。
 
+接到 WorkBuddy 的最简单方式：
+
+```bash
+node dist/bin/marvmem-agent.js install workbuddy
+```
+
+这个命令会写入用户级 `~/.workbuddy/mcp.json`，并给 MCP server 配好默认 scope：
+
+```json
+{
+  "mcpServers": {
+    "marvmem": {
+      "command": "node",
+      "args": ["/absolute/path/to/marvmem/dist/bin/marvmem-mcp.js"],
+      "env": {
+        "MARVMEM_STORAGE_PATH": "~/.marvmem/memory.sqlite",
+        "MARVMEM_SCOPE_TYPE": "agent",
+        "MARVMEM_SCOPE_ID": "workbuddy"
+      }
+    }
+  }
+}
+```
+
+因此在 WorkBuddy 里调用 `memory_write`、`memory_active_distill`、`memory_maintenance_calibrate` 这类需要 scope 的工具时，可以省略 `scopeType` / `scopeId`；MarvMem 会自动落到 `agent:workbuddy`。如果要跨工具查询共享记忆，调用 `memory_recall` 时仍然可以不传 scope。
+
 ### 全局安装到 coding agent
 
 如果目标是把 MarvMem 当成跨 agent 的用户记忆模块，推荐用全局安装入口：
@@ -585,6 +611,7 @@ node dist/bin/marvmem-agent.js install claude
 node dist/bin/marvmem-agent.js install cursor
 node dist/bin/marvmem-agent.js install copilot
 node dist/bin/marvmem-agent.js install antigravity
+node dist/bin/marvmem-agent.js install workbuddy
 ```
 
 默认会做三件事：
@@ -602,8 +629,11 @@ node dist/bin/marvmem-agent.js install antigravity
 | Cursor | `~/.cursor/mcp.json` | `~/.cursor/rules/marvmem.mdc` | `~/Library/Application Support/Cursor/User` |
 | Copilot CLI | `~/.copilot/mcp-config.json` | `~/.copilot/copilot-instructions.md` | `~/Library/Application Support/Code/User` |
 | Antigravity | `~/.gemini/antigravity/mcp_config.json` | `~/.gemini/GEMINI.md` | `~/.gemini/antigravity/brain` |
+| WorkBuddy | `~/.workbuddy/mcp.json` | n/a | n/a |
 
-这个安装入口不会给 MCP server 设置默认 `agent:*` scope。这样 agent 调 `memory_recall` 时如果不传 scope，就可以从同一个 SQLite 里跨 agent 召回；需要写入新记忆或做窄查询时，再按指令使用当前 agent 的 scope，例如 `agent:codex`、`agent:claude`、`agent:cursor`、`agent:copilot` 或 `agent:antigravity`。
+这个安装入口默认不会给 Codex、Claude Code、Cursor、Copilot、Antigravity 的 MCP server 设置 `agent:*` scope。这样 agent 调 `memory_recall` 时如果不传 scope，就可以从同一个 SQLite 里跨 agent 召回；需要写入新记忆或做窄查询时，再按指令使用当前 agent 的 scope，例如 `agent:codex`、`agent:claude`、`agent:cursor`、`agent:copilot` 或 `agent:antigravity`。
+
+WorkBuddy 是例外：它没有 MarvMem 可以稳定写入的全局指令文件，所以 installer 会在 MCP env 里设置 `MARVMEM_SCOPE_TYPE=agent` 和 `MARVMEM_SCOPE_ID=workbuddy`，让写入类工具默认落到 `agent:workbuddy`，减少普通用户配置负担。
 
 常用选项：
 
@@ -628,7 +658,7 @@ node dist/bin/marvmem-agent.js install copilot \
 | `marvmem-agent ui` | 启动本地 Web 控制台 |
 | `marvmem-agent tui` | 启动终端控制台 |
 
-`install` 支持的 target：`codex`、`claude`、`cursor`、`copilot`、`antigravity`、`all`。
+`install` 支持的 target：`codex`、`claude`、`cursor`、`copilot`、`antigravity`、`workbuddy`、`all`。
 
 `marvmem-agent` 的常用参数：
 

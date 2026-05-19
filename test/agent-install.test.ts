@@ -70,6 +70,30 @@ test("agent installer writes Cursor, Copilot, and Antigravity MCP configs and in
   }
 });
 
+test("agent installer writes WorkBuddy MCP config with a default scope", async () => {
+  const root = await mkdtemp(join(tmpdir(), "marvmem-agent-workbuddy-"));
+  const storagePath = join(root, "memory.sqlite");
+  const mcpPath = join(root, "marvmem-mcp.js");
+
+  try {
+    const output = await runInstaller("workbuddy", root, storagePath, mcpPath);
+    const parsed = JSON.parse(output);
+    assert.equal(parsed.results[0].agent, "workbuddy");
+    assert.equal(parsed.results[0].mcp, "installed");
+    assert.equal(parsed.results[0].import, "skipped");
+    assert.equal(parsed.results[0].instructions, "skipped");
+
+    const config = JSON.parse(await readFile(join(root, ".workbuddy", "mcp.json"), "utf8"));
+    assert.equal(config.mcpServers.marvmem.command, "node");
+    assert.deepEqual(config.mcpServers.marvmem.args, [mcpPath]);
+    assert.equal(config.mcpServers.marvmem.env.MARVMEM_STORAGE_PATH, storagePath);
+    assert.equal(config.mcpServers.marvmem.env.MARVMEM_SCOPE_TYPE, "agent");
+    assert.equal(config.mcpServers.marvmem.env.MARVMEM_SCOPE_ID, "workbuddy");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("agent installer import step tolerates missing session roots", async () => {
   const root = await mkdtemp(join(tmpdir(), "marvmem-agent-import-"));
   const storagePath = join(root, "memory.sqlite");
@@ -180,7 +204,7 @@ test("install all can create the local service without invoking launchctl", asyn
       "3392",
     ]);
     const parsed = JSON.parse(output);
-    assert.equal(parsed.results.length, 5);
+    assert.equal(parsed.results.length, 6);
     assert.equal(parsed.service.started, false);
     assert.match(parsed.service.url, /^http:\/\/127\.0\.0\.1:3392\/console\?apiKey=mm_/);
   } finally {

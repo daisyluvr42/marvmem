@@ -164,7 +164,7 @@ describe("Console API routes", () => {
     const data = (await res.json()) as Record<string, unknown>;
     assert.equal(data.storagePath, join(agentHome, "memory.sqlite"));
     const agents = data.agents as Array<Record<string, unknown>>;
-    assert.equal(agents.length, 5);
+    assert.equal(agents.length, 6);
     const codex = agents.find((agent) => agent.agent === "codex");
     assert.ok(codex);
     assert.equal((codex.sessions as Record<string, unknown>).rootExists, false);

@@ -22,6 +22,7 @@ export function createMemoryToolSet(params: {
   runtime?: MemoryRuntime;
   defaultScopes?: MemoryScope[];
 }): MemoryToolDefinition[] {
+  const hasDefaultScope = Boolean(params.defaultScopes?.[0]);
   const runtime =
     params.runtime ??
     createMemoryRuntime({
@@ -121,10 +122,10 @@ export function createMemoryToolSet(params: {
             additionalProperties: true,
           },
         },
-        required: ["content", "scopeType", "scopeId"],
+        required: hasDefaultScope ? ["content"] : ["content", "scopeType", "scopeId"],
       },
       execute: async (args) => {
-        const scope = requireScope(args);
+        const scope = requireScope(args, params.defaultScopes);
         return {
           record: await params.memory.remember({
             scope,
@@ -267,10 +268,10 @@ export function createMemoryToolSet(params: {
           scopeType: { type: "string" },
           scopeId: { type: "string" },
         },
-        required: ["scopeType", "scopeId"],
+        required: hasDefaultScope ? [] : ["scopeType", "scopeId"],
       },
       execute: async (args) => {
-        const scope = requireScope(args);
+        const scope = requireScope(args, params.defaultScopes);
         return {
           context: await params.memory.active.read("context", scope),
           experience: await params.memory.active.read("experience", scope),
@@ -290,10 +291,10 @@ export function createMemoryToolSet(params: {
           scopeId: { type: "string" },
           maxChars: { type: "number" },
         },
-        required: ["kind", "content", "scopeType", "scopeId"],
+        required: hasDefaultScope ? ["kind", "content"] : ["kind", "content", "scopeType", "scopeId"],
       },
       execute: async (args) => {
-        const scope = requireScope(args);
+        const scope = requireScope(args, params.defaultScopes);
         const kind = expectString(args.kind, "kind");
         const content = expectString(args.content, "content");
         if (kind === "context") {
@@ -577,12 +578,12 @@ export function createMemoryToolSet(params: {
           scopeId: { type: "string" },
           maxChars: { type: "number" },
         },
-        required: ["scopeType", "scopeId"],
+        required: hasDefaultScope ? [] : ["scopeType", "scopeId"],
       },
       execute: async (args) => {
         return {
           result: await params.memory.maintenance.calibrateExperience({
-            scope: requireScope(args),
+            scope: requireScope(args, params.defaultScopes),
             maxChars: expectNumber(args.maxChars),
           }),
         };
@@ -599,12 +600,12 @@ export function createMemoryToolSet(params: {
           scopeId: { type: "string" },
           maxChars: { type: "number" },
         },
-        required: ["scopeType", "scopeId"],
+        required: hasDefaultScope ? [] : ["scopeType", "scopeId"],
       },
       execute: async (args) => {
         return {
           result: await params.memory.maintenance.rebuildExperience({
-            scope: requireScope(args),
+            scope: requireScope(args, params.defaultScopes),
             maxChars: expectNumber(args.maxChars),
           }),
         };
@@ -826,10 +827,12 @@ function clampText(text: string, maxChars: number): string {
   return text.length <= maxChars ? text : text.slice(0, maxChars).trimEnd();
 }
 
-function requireScope(args: Record<string, unknown>): MemoryScope {
-  const scopeType = expectString(args.scopeType, "scopeType") as MemoryScope["type"];
-  const scopeId = expectString(args.scopeId, "scopeId");
-  return { type: scopeType, id: scopeId };
+function requireScope(args: Record<string, unknown>, fallback?: MemoryScope[]): MemoryScope {
+  const scope = parseScopeArgs(args, fallback)?.[0];
+  if (!scope) {
+    throw new Error("scopeType and scopeId are required when no default scope is configured");
+  }
+  return scope;
 }
 
 function parseScopeArgs(

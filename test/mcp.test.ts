@@ -68,6 +68,69 @@ test("lists MCP tools and executes write/search flow", async () => {
   assert.deepEqual(parsed.hits?.[0]?.record.metadata, { sessionId: "s1", cwd: "/repo" });
 });
 
+test("MCP write and scope-bound tools use configured default scope", async () => {
+  const memory = createMarvMem({ store: new InMemoryStore() });
+  const handler = createMemoryMcpHandler({
+    memory,
+    defaultScopes: [{ type: "agent", id: "workbuddy" }],
+  });
+
+  const list = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/list",
+  })) as { result?: { tools?: Array<{ name: string; inputSchema: { required?: string[] } }> } };
+  const writeTool = list.result?.tools?.find((tool) => tool.name === "memory_write");
+  assert.deepEqual(writeTool?.inputSchema.required, ["content"]);
+
+  await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/call",
+    params: {
+      name: "memory_write",
+      arguments: {
+        content: "WorkBuddy should use the configured default scope.",
+        kind: "preference",
+      },
+    },
+  });
+
+  const search = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 3,
+    method: "tools/call",
+    params: {
+      name: "memory_search",
+      arguments: {
+        query: "configured default scope",
+        scopeType: "agent",
+        scopeId: "workbuddy",
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+
+  const parsed = JSON.parse(search.result?.content?.[0]?.text ?? "{}");
+  assert.equal(parsed.hits?.[0]?.record.scope.type, "agent");
+  assert.equal(parsed.hits?.[0]?.record.scope.id, "workbuddy");
+
+  const active = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 4,
+    method: "tools/call",
+    params: {
+      name: "memory_active_distill",
+      arguments: {
+        kind: "context",
+        content: "WorkBuddy active context.",
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+
+  const activeParsed = JSON.parse(active.result?.content?.[0]?.text ?? "{}");
+  assert.equal(activeParsed.document.scope.id, "workbuddy");
+});
+
 test("memory_recall exposes record markers through MCP", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
   const handler = createMemoryMcpHandler({ memory });
