@@ -574,6 +574,8 @@ claude mcp add-json -s project marvmem '{"type":"stdio","command":"node","args":
 node dist/bin/marvmem-agent.js install workbuddy
 ```
 
+如果你只是想给 WorkBuddy 装好并立刻使用，可以直接看普通用户版教程：[`WORKBUDDY.md`](WORKBUDDY.md)。
+
 这个命令会写入用户级 `~/.workbuddy/mcp.json`，并给 MCP server 配好默认 scope：
 
 ```json
