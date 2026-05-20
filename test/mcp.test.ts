@@ -11,9 +11,10 @@ test("lists MCP tools and executes write/search flow", async () => {
     jsonrpc: "2.0",
     id: 1,
     method: "tools/list",
-  })) as { result?: { tools?: Array<{ name: string }> } };
+  })) as { result?: { tools?: Array<{ name: string; inputSchema: { required?: string[] } }> } };
 
   const toolNames = list.result?.tools?.map((tool) => tool.name) ?? [];
+  const deleteTool = list.result?.tools?.find((tool) => tool.name === "memory_delete");
   assert.ok(toolNames.includes("memory_search"));
   assert.ok(toolNames.includes("memory_get"));
   assert.ok(toolNames.includes("memory_write"));
@@ -22,6 +23,7 @@ test("lists MCP tools and executes write/search flow", async () => {
   assert.ok(toolNames.includes("memory_update"));
   assert.ok(toolNames.includes("memory_delete"));
   assert.ok(toolNames.includes("memory_session_commit"));
+  assert.deepEqual(deleteTool?.inputSchema.required, ["id", "scopeType", "scopeId"]);
 
   await handler.handleRequest({
     jsonrpc: "2.0",
@@ -162,6 +164,62 @@ test("MCP read tools with a default write scope still search shared memory", asy
   assert.match(recall.injectedContext, /AI application optionality/);
 });
 
+test("MCP update and delete stay within the configured default scope", async () => {
+  const memory = createMarvMem({ store: new InMemoryStore() });
+  const handler = createMemoryMcpHandler({
+    memory,
+    defaultScopes: [{ type: "agent", id: "workbuddy" }],
+  });
+
+  const codexRecord = await memory.remember({
+    scope: { type: "agent", id: "codex" },
+    content: "Codex-owned memory should not be deleted by WorkBuddy.",
+  });
+  const workbuddyRecord = await memory.remember({
+    scope: { type: "agent", id: "workbuddy" },
+    content: "WorkBuddy-owned memory can be updated by WorkBuddy.",
+  });
+
+  const deniedDelete = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: "memory_delete",
+      arguments: { id: codexRecord.id },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+
+  assert.equal(JSON.parse(deniedDelete.result?.content?.[0]?.text ?? "{}").deleted, false);
+  assert.ok(await memory.get(codexRecord.id));
+
+  const deniedScope = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/call",
+    params: {
+      name: "memory_delete",
+      arguments: { id: codexRecord.id, scopeType: "agent", scopeId: "codex" },
+    },
+  })) as { error?: { message?: string } };
+
+  assert.match(deniedScope.error?.message ?? "", /configured default scope/);
+
+  const update = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 3,
+    method: "tools/call",
+    params: {
+      name: "memory_update",
+      arguments: { id: workbuddyRecord.id, content: "Updated by WorkBuddy." },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+
+  const updated = JSON.parse(update.result?.content?.[0]?.text ?? "{}");
+  assert.equal(updated.updated, true);
+  assert.equal(updated.record.content, "Updated by WorkBuddy.");
+});
+
 test("memory_recall exposes record markers through MCP", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
   const handler = createMemoryMcpHandler({ memory });
@@ -258,7 +316,7 @@ test("memory_list and memory_delete work through MCP", async () => {
     method: "tools/call",
     params: {
       name: "memory_delete",
-      arguments: { id: recordId },
+      arguments: { id: recordId, scopeType: "user", scopeId: "bob" },
     },
   })) as { result?: { content?: Array<{ text: string }> } };
 

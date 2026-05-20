@@ -41,7 +41,7 @@ export async function handleMemoryRoutes(
   if (path === "/v1/memories/batch" && req.method === "DELETE") {
     const body = (await readBody(req)) as Record<string, unknown>;
     const ids = Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === "string") : [];
-    const context = memoryContextFromQuery(ctx.projectId, url);
+    const context = { projectId: ctx.projectId };
     let deleted = 0;
     for (const id of ids) {
       if (await ctx.platform.deleteMemory({ context, id })) {
@@ -112,6 +112,7 @@ export async function handleMemoryRoutes(
   }
   const id = idMatch[1]!;
   const ref = { context: memoryContextFromQuery(ctx.projectId, url), id };
+  const writeRef = { context: { projectId: ctx.projectId }, id };
 
   // GET /v1/memories/:id/history
   if (path.endsWith("/history") && req.method === "GET") {
@@ -137,7 +138,7 @@ export async function handleMemoryRoutes(
   if (req.method === "PATCH") {
     const patch = (await readBody(req)) as Record<string, unknown>;
     const updated = await ctx.platform.updateMemory({
-      ref,
+      ref: writeRef,
       patch: {
         content: patch.content as string | undefined,
         summary: patch.summary as string | undefined,
@@ -159,7 +160,7 @@ export async function handleMemoryRoutes(
 
   // DELETE /v1/memories/:id
   if (req.method === "DELETE") {
-    const deleted = await ctx.platform.deleteMemory(ref);
+    const deleted = await ctx.platform.deleteMemory(writeRef);
     if (!deleted) {
       json(res, 404, { error: "Memory not found" });
       return;

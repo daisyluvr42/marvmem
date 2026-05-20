@@ -151,6 +151,8 @@ export function createMemoryToolSet(params: {
         additionalProperties: false,
         properties: {
           id: { type: "string" },
+          scopeType: { type: "string" },
+          scopeId: { type: "string" },
           content: { type: "string" },
           kind: { type: "string" },
           summary: { type: "string" },
@@ -166,10 +168,15 @@ export function createMemoryToolSet(params: {
             additionalProperties: true,
           },
         },
-        required: ["id"],
+        required: hasDefaultScope ? ["id"] : ["id", "scopeType", "scopeId"],
       },
       execute: async (args) => {
         const id = expectString(args.id, "id");
+        const scope = requireDestructiveScope(args, params.defaultScopes);
+        const existing = await params.memory.get(id);
+        if (!existing || !sameScope(existing.scope, scope)) {
+          return { record: null, updated: false };
+        }
         const patch: Record<string, unknown> = {};
         if (args.content !== undefined) patch.content = args.content;
         if (args.kind !== undefined) patch.kind = args.kind;
@@ -191,11 +198,18 @@ export function createMemoryToolSet(params: {
         additionalProperties: false,
         properties: {
           id: { type: "string" },
+          scopeType: { type: "string" },
+          scopeId: { type: "string" },
         },
-        required: ["id"],
+        required: hasDefaultScope ? ["id"] : ["id", "scopeType", "scopeId"],
       },
       execute: async (args) => {
         const id = expectString(args.id, "id");
+        const scope = requireDestructiveScope(args, params.defaultScopes);
+        const existing = await params.memory.get(id);
+        if (!existing || !sameScope(existing.scope, scope)) {
+          return { deleted: false };
+        }
         const deleted = await params.memory.forget(id);
         return { deleted };
       },
@@ -835,6 +849,19 @@ function requireScope(args: Record<string, unknown>, fallback?: MemoryScope[]): 
   return scope;
 }
 
+function requireDestructiveScope(args: Record<string, unknown>, fallback?: MemoryScope[]): MemoryScope {
+  const requested = parseReadScopeArgs(args)?.[0];
+  const defaultScope = fallback?.[0];
+  if (defaultScope && requested && !sameScope(requested, defaultScope)) {
+    throw new Error("scopeType and scopeId must match the configured default scope");
+  }
+  const scope = requested ?? defaultScope;
+  if (!scope) {
+    throw new Error("scopeType and scopeId are required for update/delete when no default scope is configured");
+  }
+  return scope;
+}
+
 function parseScopeArgs(
   args: Record<string, unknown>,
   fallback?: MemoryScope[],
@@ -849,6 +876,10 @@ function parseReadScopeArgs(args: Record<string, unknown>): MemoryScope[] | unde
     return [{ type: scopeType as MemoryScope["type"], id: scopeId }];
   }
   return undefined;
+}
+
+function sameScope(left: MemoryScope, right: MemoryScope): boolean {
+  return left.type === right.type && left.id === right.id;
 }
 
 function expectString(value: unknown, label: string): string {

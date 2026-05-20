@@ -172,6 +172,15 @@ describe("HermesBridgeAdapter", () => {
     assert.ok(existsSync(join(memDir, "MEMORY.md")));
     cleanup();
   });
+
+  it("detect reads sourceRoot from adapter options", async () => {
+    const memDir = join(FIXTURE_DIR, "hermes-detect");
+    ensureDir(memDir);
+    const adapter = new HermesBridgeAdapter({ memory });
+
+    assert.equal(await adapter.detect({ context: makeContext(), adapterOptions: { sourceRoot: memDir } }), true);
+    cleanup();
+  });
 });
 
 // ---------------------------------------------------------------------------

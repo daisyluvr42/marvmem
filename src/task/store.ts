@@ -126,6 +126,7 @@ export class SqliteTaskContextStore implements TaskContextStore {
     entry: Omit<TaskContextEntry, "sequence"> & { sequence?: number },
   ): Promise<TaskContextEntry> {
     const db = openSqliteDatabase(this.filePath);
+    db.exec("BEGIN IMMEDIATE");
     try {
       const sequence =
         entry.sequence ??
@@ -153,10 +154,14 @@ export class SqliteTaskContextStore implements TaskContextStore {
         entry.summarized ? 1 : 0,
       );
       touchTaskContext(db, entry.taskId, entry.createdAt);
+      db.exec("COMMIT");
       return {
         ...entry,
         sequence,
       };
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
     } finally {
       db.close();
     }

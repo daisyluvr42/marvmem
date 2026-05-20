@@ -60,7 +60,7 @@ export class SqliteMemoryStore implements MemoryStore {
 
   async save(records: MemoryRecord[]): Promise<void> {
     using db = openSqliteDatabase(this.filePath);
-    db.exec("BEGIN");
+    db.exec("BEGIN IMMEDIATE");
     try {
       db.exec("DELETE FROM memory_items_fts");
       db.exec("DELETE FROM memory_items");
@@ -107,7 +107,7 @@ export class SqliteMemoryStore implements MemoryStore {
 
   async upsert(record: MemoryRecord): Promise<void> {
     using db = openSqliteDatabase(this.filePath);
-    db.exec("BEGIN");
+    db.exec("BEGIN IMMEDIATE");
     try {
       db
         .prepare(
@@ -156,7 +156,7 @@ export class SqliteMemoryStore implements MemoryStore {
 
   async delete(id: string): Promise<void> {
     using db = openSqliteDatabase(this.filePath);
-    db.exec("BEGIN");
+    db.exec("BEGIN IMMEDIATE");
     try {
       db.prepare("DELETE FROM memory_items_fts WHERE id = ?").run(id);
       db.prepare("DELETE FROM memory_items WHERE id = ?").run(id);

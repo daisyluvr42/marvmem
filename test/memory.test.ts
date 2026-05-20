@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -162,6 +164,95 @@ test("sqlite stores concurrent writes from separate instances without clobbering
   const all = await reader.list();
   assert.equal(all.length, 2);
   assert.deepEqual(all.map((record) => record.source).sort(), ["claude", "codex"]);
+});
+
+test("sqlite write waits for another process instead of failing while locked", async () => {
+  const root = await mkdtemp(join(tmpdir(), "marvmem-sqlite-locked-"));
+  const path = join(root, "memory.sqlite");
+  const script = `
+    import { DatabaseSync } from "node:sqlite";
+    const db = new DatabaseSync(${JSON.stringify(path)}, { timeout: 10000 });
+    db.exec("PRAGMA busy_timeout = 10000;");
+    db.exec("PRAGMA journal_mode = WAL;");
+    db.exec("CREATE TABLE IF NOT EXISTS lock_probe (id INTEGER PRIMARY KEY);");
+    db.exec("BEGIN IMMEDIATE;");
+    db.prepare("INSERT INTO lock_probe DEFAULT VALUES").run();
+    console.log("locked");
+    setTimeout(() => {
+      db.exec("COMMIT");
+      db.close();
+      console.log("released");
+    }, 250);
+  `;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+  const deadline = Date.now() + 2_000;
+  while (!stdout.includes("locked")) {
+    const exit = child.exitCode;
+    if (exit !== null) {
+      assert.fail(`lock holder exited early (${exit}): ${stderr}`);
+    }
+    if (Date.now() > deadline) {
+      child.kill();
+      assert.fail(`lock holder did not acquire lock: ${stderr}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  const memory = createMarvMem({ storage: { backend: "sqlite", path } });
+  await memory.remember({
+    scope: { type: "agent", id: "workbuddy" },
+    kind: "note",
+    content: "WorkBuddy write waited for the database lock.",
+    source: "workbuddy",
+  });
+
+  const [code] = await once(child, "exit");
+  assert.equal(code, 0, stderr);
+  const all = await memory.list();
+  assert.equal(all.length, 1);
+  assert.match(all[0]!.content, /waited for the database lock/);
+});
+
+test("sqlite task appends from separate instances keep a single sequence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "marvmem-task-concurrent-"));
+  const path = join(root, "memory.sqlite");
+  const first = createMarvMem({ storage: { backend: "sqlite", path } });
+  const second = createMarvMem({ storage: { backend: "sqlite", path } });
+  const taskId = "shared-session";
+
+  await first.task.create({
+    taskId,
+    scope: { type: "agent", id: "codex" },
+    title: "Shared session",
+  });
+
+  const entries = await Promise.all(
+    Array.from({ length: 12 }, (_, index) =>
+      (index % 2 === 0 ? first : second).task.appendEntry({
+        taskId,
+        role: "assistant",
+        content: `entry ${index}`,
+      }),
+    ),
+  );
+
+  assert.equal(entries.filter(Boolean).length, 12);
+  const reader = createMarvMem({ storage: { backend: "sqlite", path } });
+  const stored = await reader.task.listEntries(taskId);
+  assert.deepEqual(
+    stored.map((entry) => entry.sequence),
+    Array.from({ length: 12 }, (_, index) => index + 1),
+  );
 });
 
 test("update modifies an existing record", async () => {

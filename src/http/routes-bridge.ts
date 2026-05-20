@@ -38,7 +38,7 @@ export async function handleBridgeRoutes(
   const context = bindAuthorizedContext(ctx.projectId, body.context);
   const bridgeContext = {
     context: context as any,
-    sourceRoot: body.sourceRoot as string | undefined,
+    adapterOptions: asRecord(body.adapterOptions) ?? undefined,
   };
 
   if (action === "import") {
@@ -65,4 +65,10 @@ export async function handleBridgeRoutes(
   }
 
   json(res, 404, { error: "Not found" });
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }

@@ -7,12 +7,11 @@ import type { MemoryContext } from "../platform/types.js";
 
 /**
  * Context for bridge operations.
- * `sourceRoot` is the filesystem root for the external agent workspace.
- * Only meaningful in local/self-hosted mode.
+ * `adapterOptions` is adapter-owned local/self-hosted configuration.
  */
 export type BridgeContext = {
   context: MemoryContext;
-  sourceRoot?: string;
+  adapterOptions?: Record<string, unknown>;
 };
 
 // ---------------------------------------------------------------------------
@@ -82,8 +81,7 @@ export interface BridgeAdapter {
   readonly name: string;
 
   /**
-   * Detect whether the external agent workspace exists at the given
-   * sourceRoot. Returns true if the adapter can operate.
+   * Detect whether the external agent workspace exists for this adapter.
    */
   detect(input: BridgeContext): Promise<boolean>;
 

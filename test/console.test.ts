@@ -149,13 +149,23 @@ describe("Console API routes", () => {
     assert.ok(hits.some((hit) => ((hit.record as Record<string, unknown>).scope as Record<string, unknown>).id === "codex"));
   });
 
-  it("DELETE /v1/memories/:id?view=shared can manage agent-scoped memories without changing default visibility", async () => {
+  it("DELETE /v1/memories/:id?view=shared does not delete agent-scoped memories with a project key", async () => {
     const missing = await apiFetch(`/v1/memories/${agentMemoryId}`, { method: "DELETE" });
     assert.equal(missing.status, 404);
 
     const deleted = await apiFetch(`/v1/memories/${agentMemoryId}?view=shared`, { method: "DELETE" });
-    assert.equal(deleted.status, 204);
-    assert.equal(await memory.get(agentMemoryId), null);
+    assert.equal(deleted.status, 404);
+    assert.ok(await memory.get(agentMemoryId));
+  });
+
+  it("PATCH /v1/memories/:id?view=shared does not update agent-scoped memories with a project key", async () => {
+    const updated = await apiFetch(`/v1/memories/${agentMemoryId}?view=shared`, {
+      method: "PATCH",
+      body: JSON.stringify({ content: "Project key should not update this." }),
+    });
+    assert.equal(updated.status, 404);
+    const record = await memory.get(agentMemoryId);
+    assert.match(record?.content ?? "", /shared console visibility/);
   });
 
   it("GET /v1/agents/status returns local agent setup state", async () => {

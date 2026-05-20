@@ -51,7 +51,7 @@ export class HermesBridgeAdapter implements BridgeAdapter {
   }
 
   async detect(input: BridgeContext): Promise<boolean> {
-    const memRoot = input.sourceRoot ?? join(homedir(), ".hermes", "memories");
+    const memRoot = optionalString(input.adapterOptions?.sourceRoot) ?? join(homedir(), ".hermes", "memories");
     return existsSync(memRoot);
   }
 
@@ -163,6 +163,10 @@ export class HermesBridgeAdapter implements BridgeAdapter {
       errors: errors.length > 0 ? errors : undefined,
     };
   }
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function resolveHermesPaths(files?: Partial<HermesPaths>): HermesPaths {

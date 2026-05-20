@@ -2,12 +2,20 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+const SQLITE_BUSY_TIMEOUT_MS = 10_000;
+const initializedFiles = new Set<string>();
+
 export function openSqliteDatabase(filePath: string): DatabaseSync {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const db = new DatabaseSync(filePath);
-  db.exec("PRAGMA journal_mode = WAL;");
+  const resolvedPath = path.resolve(filePath);
+  fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+  const db = new DatabaseSync(resolvedPath, { timeout: SQLITE_BUSY_TIMEOUT_MS });
+  db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};`);
   db.exec("PRAGMA foreign_keys = ON;");
-  ensureMemorySubsystemSchema(db);
+  if (!initializedFiles.has(resolvedPath)) {
+    db.exec("PRAGMA journal_mode = WAL;");
+    ensureMemorySubsystemSchema(db);
+    initializedFiles.add(resolvedPath);
+  }
   return db;
 }
 

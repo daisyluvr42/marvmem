@@ -62,7 +62,7 @@ export class OpenClawBridgeAdapter implements BridgeAdapter {
   }
 
   async detect(input: BridgeContext): Promise<boolean> {
-    const root = input.sourceRoot ?? this.paths.workspacePath;
+    const root = optionalString(input.adapterOptions?.sourceRoot) ?? this.paths.workspacePath;
     return existsSync(root);
   }
 
@@ -215,6 +215,10 @@ export class OpenClawBridgeAdapter implements BridgeAdapter {
       errors: errors.length > 0 ? errors : undefined,
     };
   }
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function resolveOpenClawPaths(files?: Partial<OpenClawPaths>): OpenClawPaths {
