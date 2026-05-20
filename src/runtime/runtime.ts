@@ -25,7 +25,7 @@ export function createMemoryRuntime(params: {
 
   return {
     async buildRecallContext(turn: MemoryTurnInput) {
-      const scopes = resolveScopes(turn.scopes, options.defaultScopes);
+      const scopes = turn.scopes ?? [];
       const maxChars = turn.maxChars ?? options.maxRecallChars ?? 4_000;
       const palaceRecall = await params.memory.recall({
         query: turn.userMessage,

@@ -5,7 +5,7 @@ import { createMemoryRuntime, type MemoryRuntime } from "../runtime/index.js";
 type JsonRpcId = string | number | null;
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2024-11-05"] as const;
 const SERVER_INSTRUCTIONS =
-  "Use memory_recall when continuity or prior decisions matter. " +
+  "Use memory_recall without scopeType/scopeId when continuity or prior decisions matter, so MarvMem can search shared memory across agents. " +
   "Use memory_write for durable user preferences, facts, or explicit remember requests. " +
   "Use memory_session_commit when the host agent has already distilled a session. " +
   "Use memory_task_append and memory_task_window for longer task-focused work.";
@@ -48,7 +48,7 @@ export function createMemoryToolSet(params: {
       },
       execute: async (args) => {
         const query = expectString(args.query, "query");
-        const scopes = parseScopeArgs(args, params.defaultScopes);
+        const scopes = parseReadScopeArgs(args);
         return {
           hits: await params.memory.search(query, {
             scopes,
@@ -89,7 +89,7 @@ export function createMemoryToolSet(params: {
         },
       },
       execute: async (args) => {
-        const scopes = parseScopeArgs(args, params.defaultScopes);
+        const scopes = parseReadScopeArgs(args);
         return {
           records: await params.memory.list({
             scopes,
@@ -220,7 +220,7 @@ export function createMemoryToolSet(params: {
       },
       execute: async (args) => {
         const message = expectString(args.message, "message");
-        const scopes = parseScopeArgs(args, params.defaultScopes);
+        const scopes = parseReadScopeArgs(args);
         return await runtime.buildRecallContext({
           userMessage: message,
           recentMessages: Array.isArray(args.recentMessages)
@@ -249,7 +249,7 @@ export function createMemoryToolSet(params: {
       },
       execute: async (args) => {
         const query = expectString(args.query, "query");
-        const scopes = parseScopeArgs(args, params.defaultScopes);
+        const scopes = parseReadScopeArgs(args);
         return await params.memory.retrieval.recall(query, {
           scopes,
           maxResults: expectNumber(args.maxResults),
@@ -839,12 +839,16 @@ function parseScopeArgs(
   args: Record<string, unknown>,
   fallback?: MemoryScope[],
 ): MemoryScope[] | undefined {
+  return parseReadScopeArgs(args) ?? fallback;
+}
+
+function parseReadScopeArgs(args: Record<string, unknown>): MemoryScope[] | undefined {
   const scopeType = optionalString(args.scopeType);
   const scopeId = optionalString(args.scopeId);
   if (scopeType && scopeId) {
     return [{ type: scopeType as MemoryScope["type"], id: scopeId }];
   }
-  return fallback;
+  return undefined;
 }
 
 function expectString(value: unknown, label: string): string {

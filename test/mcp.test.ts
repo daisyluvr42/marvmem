@@ -131,6 +131,37 @@ test("MCP write and scope-bound tools use configured default scope", async () =>
   assert.equal(activeParsed.document.scope.id, "workbuddy");
 });
 
+test("MCP read tools with a default write scope still search shared memory", async () => {
+  const memory = createMarvMem({ store: new InMemoryStore() });
+  const handler = createMemoryMcpHandler({
+    memory,
+    defaultScopes: [{ type: "agent", id: "workbuddy" }],
+  });
+
+  await memory.remember({
+    scope: { type: "agent", id: "codex" },
+    content: "Tencent article thesis: valuation is shifting from platform PE to AI application optionality.",
+    source: "codex_session_import",
+  });
+
+  const recallResult = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: "memory_recall",
+      arguments: {
+        message: "Tencent article valuation thesis",
+        maxChars: 1000,
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+
+  const recall = JSON.parse(recallResult.result?.content?.[0]?.text ?? "{}");
+  assert.equal(recall.hits?.[0]?.record.scope.id, "codex");
+  assert.match(recall.injectedContext, /AI application optionality/);
+});
+
 test("memory_recall exposes record markers through MCP", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
   const handler = createMemoryMcpHandler({ memory });
