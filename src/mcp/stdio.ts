@@ -9,6 +9,7 @@ export type MemoryMcpStdioServerOptions = {
   defaultScopes?: MemoryScope[];
   storagePath?: string;
   retrieval?: MarvMemOptions["retrieval"];
+  onMemoryChanged?: () => Promise<void>;
   stdin?: NodeJS.ReadableStream;
   stdout?: NodeJS.WritableStream;
   stderr?: NodeJS.WritableStream;
@@ -36,6 +37,7 @@ export async function runMemoryMcpStdioServer(
   const handler = createMemoryMcpHandler({
     memory,
     defaultScopes: options.defaultScopes,
+    onMemoryChanged: options.onMemoryChanged,
   });
 
   if ("setEncoding" in stdin && typeof stdin.setEncoding === "function") {

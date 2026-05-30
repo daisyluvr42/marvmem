@@ -11,8 +11,10 @@ import {
   createMarvInferencer,
   createOpenClawInferencer,
   createOpenClawMemoryAdapter,
+  createWorkBuddyMemoryAdapter,
   installHermesAgentMemoryTakeover,
   installOpenClawMemoryTakeover,
+  installWorkBuddyMemoryTakeover,
 } from "../src/adapters/index.js";
 import { createMarvMem, InMemoryStore } from "../src/core/index.js";
 
@@ -120,16 +122,70 @@ test("OpenClaw takeover imports workspace markdown and keeps projections updated
   }
 });
 
+test("WorkBuddy takeover imports SOUL, USER, and MEMORY projections without losing direct edits", async () => {
+  const root = await mkdtemp(join(tmpdir(), "marvmem-workbuddy-"));
+  const workbuddyHome = join(root, ".workbuddy");
+  const soulPath = join(workbuddyHome, "SOUL.md");
+  const userPath = join(workbuddyHome, "USER.md");
+  const memoryPath = join(workbuddyHome, "MEMORY.md");
+
+  try {
+    await mkdir(workbuddyHome, { recursive: true });
+    await writeFile(soulPath, "- You are a calm work assistant.\n", "utf8");
+    await writeFile(userPath, "- Prefers concise Chinese replies.\n", "utf8");
+    await writeFile(memoryPath, "- Use pnpm workspaces.\n", "utf8");
+
+    const memory = createMarvMem({
+      store: new InMemoryStore(),
+      inferencer: async ({ prompt }) => ({ ok: true, text: `Summary: ${prompt}` }),
+    });
+
+    const { adapter, imported } = await installWorkBuddyMemoryTakeover({
+      memory,
+      defaultScopes: [{ type: "agent", id: "workbuddy-test" }],
+      files: { homePath: workbuddyHome },
+    });
+
+    assert.equal(imported.soulEntries, 1);
+    assert.equal(imported.userEntries, 1);
+    assert.equal(imported.memoryEntries, 1);
+
+    await writeFile(memoryPath, "- Use pnpm workspaces.\n- Manual edits should survive takeover.\n", "utf8");
+    await memory.remember({
+      scope: { type: "agent", id: "workbuddy-test" },
+      kind: "preference",
+      content: "Prefers numbered lists for status reports.",
+      summary: "Prefers numbered lists for status reports.",
+    });
+
+    await adapter.syncProjection();
+
+    const nextSoul = await readFile(soulPath, "utf8");
+    const nextUser = await readFile(userPath, "utf8");
+    const nextMemory = await readFile(memoryPath, "utf8");
+
+    assert.match(nextSoul, /calm work assistant/);
+    assert.match(nextUser, /concise Chinese replies/);
+    assert.match(nextUser, /numbered lists/);
+    assert.match(nextMemory, /Use pnpm workspaces/);
+    assert.match(nextMemory, /Manual edits should survive takeover/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("agent-specific adapter factories default to takeover-friendly session scopes", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
   const hermes = createHermesAgentMemoryAdapter({ memory });
   const openclaw = createOpenClawMemoryAdapter({ memory });
+  const workbuddy = createWorkBuddyMemoryAdapter({ memory });
 
   const hermesPrompt = await hermes.beforePrompt({ userMessage: "hi" });
   const openclawPrompt = await openclaw.beforePrompt({ userMessage: "hi" });
 
   assert.equal(typeof hermesPrompt.systemHint, "string");
   assert.equal(typeof openclawPrompt.systemHint, "string");
+  assert.match(workbuddy.paths.soulPath, /SOUL\.md$/);
 });
 
 test("OpenClaw flush-session CLI distills active context from forwarded session messages", async () => {

@@ -14,6 +14,7 @@ export type MemoryToolDefinition = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  mutatesMemory?: boolean;
   execute(args: Record<string, unknown>): Promise<unknown>;
 };
 
@@ -21,6 +22,7 @@ export function createMemoryToolSet(params: {
   memory: MarvMem;
   runtime?: MemoryRuntime;
   defaultScopes?: MemoryScope[];
+  onMemoryChanged?: () => Promise<void>;
 }): MemoryToolDefinition[] {
   const hasDefaultScope = Boolean(params.defaultScopes?.[0]);
   const runtime =
@@ -101,6 +103,7 @@ export function createMemoryToolSet(params: {
     {
       name: "memory_write",
       description: "Persist a durable memory record. Automatically merges with similar existing memories.",
+      mutatesMemory: true,
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -146,6 +149,7 @@ export function createMemoryToolSet(params: {
     {
       name: "memory_update",
       description: "Update an existing memory record by id.",
+      mutatesMemory: true,
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -193,6 +197,7 @@ export function createMemoryToolSet(params: {
     {
       name: "memory_delete",
       description: "Delete a memory record by id. Irreversible.",
+      mutatesMemory: true,
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -295,6 +300,7 @@ export function createMemoryToolSet(params: {
     {
       name: "memory_active_distill",
       description: "Distill active context or active experience for a scope.",
+      mutatesMemory: true,
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -336,6 +342,7 @@ export function createMemoryToolSet(params: {
       name: "memory_session_commit",
       description:
         "Commit a host-distilled session summary. The host agent supplies the summary; MarvMem only stores and updates it.",
+      mutatesMemory: true,
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -632,6 +639,7 @@ export function createMemoryMcpHandler(params: {
   memory: MarvMem;
   runtime?: MemoryRuntime;
   defaultScopes?: MemoryScope[];
+  onMemoryChanged?: () => Promise<void>;
 }) {
   const tools = createMemoryToolSet(params);
   const toolMap = new Map(tools.map((tool) => [tool.name, tool]));
@@ -692,6 +700,9 @@ export function createMemoryMcpHandler(params: {
         }
         try {
           const result = await tool.execute(args);
+          if (tool.mutatesMemory) {
+            await params.onMemoryChanged?.();
+          }
           return rpcResult(id, {
             content: [
               {

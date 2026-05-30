@@ -133,6 +133,44 @@ test("MCP write and scope-bound tools use configured default scope", async () =>
   assert.equal(activeParsed.document.scope.id, "workbuddy");
 });
 
+test("MCP mutating tools can trigger projection sync callbacks", async () => {
+  const memory = createMarvMem({ store: new InMemoryStore() });
+  let syncs = 0;
+  const handler = createMemoryMcpHandler({
+    memory,
+    defaultScopes: [{ type: "agent", id: "workbuddy" }],
+    onMemoryChanged: async () => {
+      syncs += 1;
+    },
+  });
+
+  await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: "memory_write",
+      arguments: {
+        content: "WorkBuddy projection should refresh after writes.",
+      },
+    },
+  });
+
+  await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/call",
+    params: {
+      name: "memory_recall",
+      arguments: {
+        message: "projection refresh",
+      },
+    },
+  });
+
+  assert.equal(syncs, 1);
+});
+
 test("MCP read tools with a default write scope still search shared memory", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
   const handler = createMemoryMcpHandler({

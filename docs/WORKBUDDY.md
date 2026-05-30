@@ -7,6 +7,7 @@
 - WorkBuddy 里出现 `marvmem` MCP 服务
 - 15 个 MarvMem 工具全部启用
 - 新写入的 WorkBuddy 记忆默认进入 `agent:workbuddy`
+- 原有 `~/.workbuddy/SOUL.md`、`USER.md`、`MEMORY.md` 会被导入 MarvMem，并继续作为 Markdown 映射文件保留
 - 不传 scope 的搜索和召回可以读取共享记忆库，例如以前由 Codex、Claude Code、Antigravity 写入的记忆
 
 默认记忆库位置：
@@ -59,6 +60,16 @@ node dist/bin/marvmem-agent.js install workbuddy
 ~/.workbuddy/mcp.json
 ```
 
+它也会先接管 WorkBuddy 的三份 Markdown 记忆文件：
+
+```text
+~/.workbuddy/SOUL.md
+~/.workbuddy/USER.md
+~/.workbuddy/MEMORY.md
+```
+
+接管后，主要记忆存储在 MarvMem 数据库中；这三份文件仍留在原位置，作为 WorkBuddy 可继续读取的 Markdown 映射。每次 WorkBuddy 通过 MarvMem 写入记忆时，MarvMem 会先吸收这三份文件里的直接改动，再刷新映射内容，尽量不改变原有使用体验。
+
 配置大致长这样：
 
 ```json
@@ -70,7 +81,8 @@ node dist/bin/marvmem-agent.js install workbuddy
       "env": {
         "MARVMEM_STORAGE_PATH": "/Users/you/.marvmem/memory.sqlite",
         "MARVMEM_SCOPE_TYPE": "agent",
-        "MARVMEM_SCOPE_ID": "workbuddy"
+        "MARVMEM_SCOPE_ID": "workbuddy",
+        "MARVMEM_WORKBUDDY_HOME": "/Users/you/.workbuddy"
       }
     }
   }

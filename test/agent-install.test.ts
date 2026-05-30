@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -76,12 +76,18 @@ test("agent installer writes WorkBuddy MCP config with a default scope", async (
   const mcpPath = join(root, "marvmem-mcp.js");
 
   try {
+    await mkdir(join(root, ".workbuddy"), { recursive: true });
+    await writeFile(join(root, ".workbuddy", "SOUL.md"), "- WorkBuddy speaks calmly.\n", "utf8");
+    await writeFile(join(root, ".workbuddy", "USER.md"), "- Prefers direct answers.\n", "utf8");
+    await writeFile(join(root, ".workbuddy", "MEMORY.md"), "- Existing WorkBuddy memory.\n", "utf8");
+
     const output = await runInstaller("workbuddy", root, storagePath, mcpPath);
     const parsed = JSON.parse(output);
     assert.equal(parsed.results[0].agent, "workbuddy");
     assert.equal(parsed.results[0].mcp, "installed");
-    assert.equal(parsed.results[0].import, "skipped");
+    assert.equal(parsed.results[0].import, "imported");
     assert.equal(parsed.results[0].instructions, "skipped");
+    assert.equal(parsed.results[0].importSummary.imported, 3);
 
     const config = JSON.parse(await readFile(join(root, ".workbuddy", "mcp.json"), "utf8"));
     assert.equal(config.mcpServers.marvmem.command, "node");
@@ -89,6 +95,10 @@ test("agent installer writes WorkBuddy MCP config with a default scope", async (
     assert.equal(config.mcpServers.marvmem.env.MARVMEM_STORAGE_PATH, storagePath);
     assert.equal(config.mcpServers.marvmem.env.MARVMEM_SCOPE_TYPE, "agent");
     assert.equal(config.mcpServers.marvmem.env.MARVMEM_SCOPE_ID, "workbuddy");
+    assert.equal(config.mcpServers.marvmem.env.MARVMEM_WORKBUDDY_HOME, join(root, ".workbuddy"));
+
+    const memoryProjection = await readFile(join(root, ".workbuddy", "MEMORY.md"), "utf8");
+    assert.match(memoryProjection, /Existing WorkBuddy memory/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -587,12 +587,15 @@ node dist/bin/marvmem-agent.js install workbuddy
       "env": {
         "MARVMEM_STORAGE_PATH": "~/.marvmem/memory.sqlite",
         "MARVMEM_SCOPE_TYPE": "agent",
-        "MARVMEM_SCOPE_ID": "workbuddy"
+        "MARVMEM_SCOPE_ID": "workbuddy",
+        "MARVMEM_WORKBUDDY_HOME": "~/.workbuddy"
       }
     }
   }
 }
 ```
+
+安装时还会导入并接管 `~/.workbuddy/SOUL.md`、`~/.workbuddy/USER.md`、`~/.workbuddy/MEMORY.md`。接管后主要记忆存储在 MarvMem 数据库中，这三份 Markdown 文件继续留在原位置作为 WorkBuddy 的映射文件；MarvMem 同步前会先吸收文件中的直接改动，再刷新投影。
 
 因此在 WorkBuddy 里调用 `memory_write`、`memory_active_distill`、`memory_maintenance_calibrate` 这类需要 scope 的工具时，可以省略 `scopeType` / `scopeId`；MarvMem 会自动落到 `agent:workbuddy`。如果要跨工具查询共享记忆，调用 `memory_recall` 时仍然可以不传 scope。
 
@@ -631,11 +634,11 @@ node dist/bin/marvmem-agent.js install workbuddy
 | Cursor | `~/.cursor/mcp.json` | `~/.cursor/rules/marvmem.mdc` | `~/Library/Application Support/Cursor/User` |
 | Copilot CLI | `~/.copilot/mcp-config.json` | `~/.copilot/copilot-instructions.md` | `~/Library/Application Support/Code/User` |
 | Antigravity | `~/.gemini/antigravity/mcp_config.json` | `~/.gemini/GEMINI.md` | `~/.gemini/antigravity/brain` |
-| WorkBuddy | `~/.workbuddy/mcp.json` | n/a | n/a |
+| WorkBuddy | `~/.workbuddy/mcp.json` | `~/.workbuddy/SOUL.md` / `USER.md` / `MEMORY.md` 映射 | n/a |
 
 这个安装入口默认不会给 Codex、Claude Code、Cursor、Copilot、Antigravity 的 MCP server 设置 `agent:*` scope。这样 agent 调 `memory_recall` 时如果不传 scope，就可以从同一个 SQLite 里跨 agent 召回；需要写入新记忆或做窄查询时，再按指令使用当前 agent 的 scope，例如 `agent:codex`、`agent:claude`、`agent:cursor`、`agent:copilot` 或 `agent:antigravity`。
 
-WorkBuddy 是例外：它没有 MarvMem 可以稳定写入的全局指令文件，所以 installer 会在 MCP env 里设置 `MARVMEM_SCOPE_TYPE=agent` 和 `MARVMEM_SCOPE_ID=workbuddy`，让写入类工具默认落到 `agent:workbuddy`，减少普通用户配置负担。
+WorkBuddy 是例外：它没有 MarvMem 可以稳定写入的全局指令文件，所以 installer 会在 MCP env 里设置 `MARVMEM_SCOPE_TYPE=agent` 和 `MARVMEM_SCOPE_ID=workbuddy`，让写入类工具默认落到 `agent:workbuddy`，减少普通用户配置负担。同时它会把 `SOUL.md`、`USER.md`、`MEMORY.md` 作为数据库投影保留下来，避免打断 WorkBuddy 原本的文件读取习惯。
 
 常用选项：
 

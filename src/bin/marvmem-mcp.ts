@@ -2,12 +2,14 @@
 
 import type { MemoryScope } from "../core/types.js";
 import { defaultMemoryMcpStoragePath, runMemoryMcpStdioServer } from "../mcp/stdio.js";
-import type { MarvMemOptions } from "../core/memory.js";
+import { createMarvMem, type MarvMemOptions } from "../core/memory.js";
+import { createWorkBuddyMemoryAdapter } from "../adapters/workbuddy.js";
 
 type CliConfig = {
   defaultScopes?: MemoryScope[];
   retrieval?: MarvMemOptions["retrieval"];
   storagePath?: string;
+  workbuddyHome?: string;
 };
 
 type RetrievalConfig = NonNullable<MarvMemOptions["retrieval"]>;
@@ -38,6 +40,7 @@ Environment:
   MARVMEM_EMBEDDINGS_MODEL
   MARVMEM_EMBEDDINGS_BASE_URL
   MARVMEM_QMD_COMMAND
+  MARVMEM_WORKBUDDY_HOME
 
 Defaults:
   storage path: ${defaultMemoryMcpStoragePath()}
@@ -45,6 +48,30 @@ Defaults:
 
 async function main(): Promise<void> {
   const config = parseCliConfig(process.argv.slice(2), process.env);
+  const defaultScope = config.defaultScopes?.[0];
+  if (defaultScope?.type === "agent" && defaultScope.id === "workbuddy") {
+    const memory = createMarvMem({
+      storage: {
+        backend: "sqlite",
+        path: config.storagePath ?? defaultMemoryMcpStoragePath(),
+      },
+      retrieval: config.retrieval,
+    });
+    const adapter = createWorkBuddyMemoryAdapter({
+      memory,
+      defaultScopes: config.defaultScopes,
+      files: config.workbuddyHome ? { homePath: config.workbuddyHome } : undefined,
+    });
+    await adapter.syncProjection();
+    await runMemoryMcpStdioServer({
+      ...config,
+      memory,
+      onMemoryChanged: async () => {
+        await adapter.syncProjection();
+      },
+    });
+    return;
+  }
   await runMemoryMcpStdioServer(config);
 }
 
@@ -57,6 +84,7 @@ function parseCliConfig(argv: string[], env: NodeJS.ProcessEnv): CliConfig {
   let embeddingsModel = env.MARVMEM_EMBEDDINGS_MODEL;
   let embeddingsBaseUrl = env.MARVMEM_EMBEDDINGS_BASE_URL;
   let qmdCommand = env.MARVMEM_QMD_COMMAND;
+  let workbuddyHome = env.MARVMEM_WORKBUDDY_HOME;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -116,6 +144,7 @@ function parseCliConfig(argv: string[], env: NodeJS.ProcessEnv): CliConfig {
     defaultScopes,
     retrieval,
     storagePath,
+    workbuddyHome,
   };
 }
 

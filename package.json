@@ -76,6 +76,10 @@
       "types": "./dist/adapters/openclaw.d.ts",
       "default": "./dist/adapters/openclaw.js"
     },
+    "./adapters/workbuddy": {
+      "types": "./dist/adapters/workbuddy.d.ts",
+      "default": "./dist/adapters/workbuddy.js"
+    },
     "./adapters/marv": {
       "types": "./dist/adapters/marv.d.ts",
       "default": "./dist/adapters/marv.js"

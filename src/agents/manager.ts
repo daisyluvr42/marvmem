@@ -5,6 +5,8 @@ import { homedir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultMemoryMcpStoragePath } from "../mcp/stdio.js";
+import { createMarvMem } from "../core/memory.js";
+import { installWorkBuddyMemoryTakeover } from "../adapters/workbuddy.js";
 import { openSqliteDatabase } from "../system/sqlite.js";
 
 export const AGENT_IDS = ["codex", "claude", "cursor", "copilot", "antigravity", "workbuddy"] as const;
@@ -185,6 +187,10 @@ export async function installAgent(
     result.importSummary = await importSessions(agent, options);
     result.import = "imported";
   }
+  if (!options.skipImport && agent === "workbuddy") {
+    result.importSummary = await installWorkBuddyTakeover(options);
+    result.import = "imported";
+  }
   if (!options.skipInstructions) {
     const changed = await installInstructions(agent, options);
     result.instructions = changed ? "updated" : "skipped";
@@ -333,7 +339,7 @@ async function inspectMcpConfig(
 }
 
 async function countImported(agent: AgentId, storagePath: string): Promise<AgentStatus["imported"]> {
-  const source = `${agent}_session_import`;
+  const source = agent === "workbuddy" ? "workbuddy_import" : `${agent}_session_import`;
   if (!(await pathExists(storagePath))) {
     return { memories: 0, tasks: 0, source };
   }
@@ -405,6 +411,7 @@ async function writeJsonMcpConfig(
               ? {
                   MARVMEM_SCOPE_TYPE: "agent",
                   MARVMEM_SCOPE_ID: AGENTS.workbuddy.scopeId,
+                  MARVMEM_WORKBUDDY_HOME: AGENTS.workbuddy.defaultSessionsRoot(options.home),
                 }
               : {}),
           },
@@ -420,6 +427,16 @@ async function writeJsonMcpConfig(
         };
   config.mcpServers = servers;
   await writeJson(configPath, config);
+}
+
+async function installWorkBuddyTakeover(options: ResolvedAgentInstallOptions): Promise<Record<string, unknown>> {
+  const memory = createMarvMem({ storagePath: options.storagePath });
+  const { imported } = await installWorkBuddyMemoryTakeover({
+    memory,
+    defaultScopes: [{ type: "agent", id: AGENTS.workbuddy.scopeId }],
+    files: { homePath: AGENTS.workbuddy.defaultSessionsRoot(options.home) },
+  });
+  return imported;
 }
 
 function instructionBlock(agent: AgentId): string {
