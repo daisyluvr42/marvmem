@@ -160,10 +160,7 @@ marvmem
 
 ```bash
 cd /path/to/marvmem
-git pull --ff-only
-npm install
-npm run build
-node dist/bin/marvmem-agent.js install workbuddy
+node dist/bin/marvmem-agent.js update workbuddy
 ```
 
 然后在 WorkBuddy 的 MCP 服务管理里刷新或重新启用 `marvmem`。

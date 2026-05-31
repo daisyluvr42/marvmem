@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -40,6 +41,7 @@ Install MarvMem globally for coding agents, or launch the local setup UI.
 
 Usage:
   marvmem-agent install <codex|claude|cursor|copilot|antigravity|workbuddy|trae|all>
+  marvmem-agent update <codex|claude|cursor|copilot|antigravity|workbuddy|trae|all>
   marvmem-agent service <install|start|stop|restart|status|uninstall|url>
   marvmem-agent serve
   marvmem-agent ui
@@ -80,6 +82,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (argv[0] === "update") {
+    await runUpdate(argv.slice(1));
+    return;
+  }
+
   if (argv[0] === "service") {
     await runService(parseServiceArgs(argv.slice(1)));
     return;
@@ -100,7 +107,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  throw new Error("Expected command: install, service, serve, ui, or tui");
+  throw new Error("Expected command: install, update, service, serve, ui, or tui");
 }
 
 function parseInstallArgs(argv: string[]) {
@@ -126,6 +133,16 @@ function parseInstallArgs(argv: string[]) {
     },
     skipService: parsed.skipService,
   };
+}
+
+async function runUpdate(argv: string[]): Promise<void> {
+  parseInstallArgs(argv);
+  await runCommand("git", ["pull", "--ff-only"]);
+  await runCommand("npm", ["install"]);
+  await runCommand("npm", ["run", "build"]);
+  await runCommand(process.execPath, [fileURLToPath(import.meta.url), "install", ...argv]);
+  process.stdout.write("MarvMem code, dependencies, MCP config, instructions, and service entries are updated.\n");
+  process.stdout.write(`${defaultMemoryMcpStoragePath()} was not deleted.\n`);
 }
 
 function parseUiArgs(argv: string[]) {
@@ -594,6 +611,27 @@ async function askAgent(rl: ReturnType<typeof createInterface>): Promise<AgentId
 
 async function pause(rl: ReturnType<typeof createInterface>, message: string): Promise<void> {
   await rl.question(`\n${message}\nPress Enter to continue.`);
+}
+
+async function runCommand(command: string, args: string[]): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: repoRoot(),
+      stdio: "inherit",
+    });
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`${command} ${args.join(" ")} exited with code ${code ?? "unknown"}`));
+    });
+  });
+}
+
+function repoRoot(): string {
+  return dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 }
 
 function defaultConsolePath(): string {

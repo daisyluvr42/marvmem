@@ -651,26 +651,27 @@ node dist/bin/marvmem-agent.js install copilot \
 | 命令 | 用途 |
 |------|------|
 | `marvmem-agent install <agent\|all>` | 写入 MCP 配置、导入历史 session、写入全局指令 |
+| `marvmem-agent update <agent\|all>` | 更新代码和依赖，然后重新执行安装入口 |
 | `marvmem-agent service <cmd>` | 安装、启动、停止、查询本地常驻控制台服务 |
 | `marvmem-agent serve` | LaunchAgent 使用的长跑 HTTP console 入口，并每 15 分钟增量导入本地 agent sessions |
 | `marvmem-agent ui` | 启动本地 Web 控制台 |
 | `marvmem-agent tui` | 启动终端控制台 |
 
-`install` 支持的 target：`codex`、`claude`、`cursor`、`copilot`、`antigravity`、`workbuddy`、`trae`、`all`。
+`install` 和 `update` 支持的 target：`codex`、`claude`、`cursor`、`copilot`、`antigravity`、`workbuddy`、`trae`、`all`。
 
 `marvmem-agent` 的常用参数：
 
 | 参数 | 适用命令 | 作用 |
 |------|----------|------|
-| `--storage-path <path>` | `install` / `ui` / `tui` | 指定共享 SQLite 路径 |
-| `--mcp-path <path>` | `install` / `ui` / `tui` | 指定写入 agent 配置的 `marvmem-mcp` 脚本路径 |
-| `--home <path>` | `install` / `ui` / `tui` | 指定 agent 配置所在的 home 目录，测试或迁移时有用 |
-| `--sessions-root <path>` | `install` 单 agent | 覆盖该 agent 的历史 session 目录 |
-| `--skip-mcp` | `install` | 不写 MCP 配置 |
-| `--skip-import` | `install` | 不导入历史 session |
-| `--skip-instructions` | `install` | 不写全局指令 |
-| `--skip-service` | `install all` | 不安装本地常驻 console 服务 |
-| `--no-service-start` | `install all` | 写入 LaunchAgent 但不立刻启动 |
+| `--storage-path <path>` | `install` / `update` / `ui` / `tui` | 指定共享 SQLite 路径 |
+| `--mcp-path <path>` | `install` / `update` / `ui` / `tui` | 指定写入 agent 配置的 `marvmem-mcp` 脚本路径 |
+| `--home <path>` | `install` / `update` / `ui` / `tui` | 指定 agent 配置所在的 home 目录，测试或迁移时有用 |
+| `--sessions-root <path>` | `install` / `update` 单 agent | 覆盖该 agent 的历史 session 目录 |
+| `--skip-mcp` | `install` / `update` | 不写 MCP 配置 |
+| `--skip-import` | `install` / `update` | 不导入历史 session |
+| `--skip-instructions` | `install` / `update` | 不写全局指令 |
+| `--skip-service` | `install all` / `update all` | 不安装本地常驻 console 服务 |
+| `--no-service-start` | `install all` / `update all` | 写入 LaunchAgent 但不立刻启动 |
 | `--port <number>` | `ui` | 指定 Web 控制台端口 |
 | `--host <host>` | `ui` | 指定 Web 控制台监听地址 |
 | `--once` | `tui` | 只打印一次状态并退出 |
