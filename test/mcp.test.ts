@@ -14,24 +14,25 @@ test("lists MCP tools and executes write/search flow", async () => {
   })) as { result?: { tools?: Array<{ name: string; inputSchema: { required?: string[] } }> } };
 
   const toolNames = list.result?.tools?.map((tool) => tool.name) ?? [];
-  const deleteTool = list.result?.tools?.find((tool) => tool.name === "memory_delete");
-  assert.ok(toolNames.includes("memory_search"));
-  assert.ok(toolNames.includes("memory_get"));
-  assert.ok(toolNames.includes("memory_write"));
-  assert.ok(toolNames.includes("memory_recall"));
-  assert.ok(toolNames.includes("memory_list"));
-  assert.ok(toolNames.includes("memory_update"));
-  assert.ok(toolNames.includes("memory_delete"));
-  assert.ok(toolNames.includes("memory_session_commit"));
-  assert.deepEqual(deleteTool?.inputSchema.required, ["id", "scopeType", "scopeId"]);
+  const recordTool = list.result?.tools?.find((tool) => tool.name === "memory_record");
+  assert.deepEqual(toolNames.toSorted(), [
+    "memory_active",
+    "memory_context",
+    "memory_maintenance",
+    "memory_record",
+    "memory_session",
+    "memory_task",
+  ]);
+  assert.deepEqual(recordTool?.inputSchema.required, ["action"]);
 
   await handler.handleRequest({
     jsonrpc: "2.0",
     id: 2,
     method: "tools/call",
     params: {
-      name: "memory_write",
+      name: "memory_record",
       arguments: {
+        action: "write",
         content: "User prefers concise Chinese replies.",
         kind: "preference",
         scopeType: "user",
@@ -51,8 +52,9 @@ test("lists MCP tools and executes write/search flow", async () => {
     id: 3,
     method: "tools/call",
     params: {
-      name: "memory_search",
+      name: "memory_record",
       arguments: {
+        action: "search",
         query: "What language should I reply in?",
         scopeType: "user",
         scopeId: "alice",
@@ -82,16 +84,17 @@ test("MCP write and scope-bound tools use configured default scope", async () =>
     id: 1,
     method: "tools/list",
   })) as { result?: { tools?: Array<{ name: string; inputSchema: { required?: string[] } }> } };
-  const writeTool = list.result?.tools?.find((tool) => tool.name === "memory_write");
-  assert.deepEqual(writeTool?.inputSchema.required, ["content"]);
+  const recordTool = list.result?.tools?.find((tool) => tool.name === "memory_record");
+  assert.deepEqual(recordTool?.inputSchema.required, ["action"]);
 
   await handler.handleRequest({
     jsonrpc: "2.0",
     id: 2,
     method: "tools/call",
     params: {
-      name: "memory_write",
+      name: "memory_record",
       arguments: {
+        action: "write",
         content: "WorkBuddy should use the configured default scope.",
         kind: "preference",
       },
@@ -103,8 +106,9 @@ test("MCP write and scope-bound tools use configured default scope", async () =>
     id: 3,
     method: "tools/call",
     params: {
-      name: "memory_search",
+      name: "memory_record",
       arguments: {
+        action: "search",
         query: "configured default scope",
         scopeType: "agent",
         scopeId: "workbuddy",
@@ -121,8 +125,9 @@ test("MCP write and scope-bound tools use configured default scope", async () =>
     id: 4,
     method: "tools/call",
     params: {
-      name: "memory_active_distill",
+      name: "memory_active",
       arguments: {
+        action: "distill",
         kind: "context",
         content: "WorkBuddy active context.",
       },
@@ -149,8 +154,9 @@ test("MCP mutating tools can trigger projection sync callbacks", async () => {
     id: 1,
     method: "tools/call",
     params: {
-      name: "memory_write",
+      name: "memory_record",
       arguments: {
+        action: "write",
         content: "WorkBuddy projection should refresh after writes.",
       },
     },
@@ -161,8 +167,9 @@ test("MCP mutating tools can trigger projection sync callbacks", async () => {
     id: 2,
     method: "tools/call",
     params: {
-      name: "memory_recall",
+      name: "memory_context",
       arguments: {
+        action: "recall",
         message: "projection refresh",
       },
     },
@@ -189,8 +196,9 @@ test("MCP read tools with a default write scope still search shared memory", asy
     id: 1,
     method: "tools/call",
     params: {
-      name: "memory_recall",
+      name: "memory_context",
       arguments: {
+        action: "recall",
         message: "Tencent article valuation thesis",
         maxChars: 1000,
       },
@@ -223,8 +231,9 @@ test("MCP update and delete stay within the configured default scope", async () 
     id: 1,
     method: "tools/call",
     params: {
-      name: "memory_delete",
-      arguments: { id: codexRecord.id },
+      name: "memory_record",
+      arguments: {
+        action: "delete", id: codexRecord.id },
     },
   })) as { result?: { content?: Array<{ text: string }> } };
 
@@ -236,8 +245,9 @@ test("MCP update and delete stay within the configured default scope", async () 
     id: 2,
     method: "tools/call",
     params: {
-      name: "memory_delete",
-      arguments: { id: codexRecord.id, scopeType: "agent", scopeId: "codex" },
+      name: "memory_record",
+      arguments: {
+        action: "delete", id: codexRecord.id, scopeType: "agent", scopeId: "codex" },
     },
   })) as { error?: { message?: string } };
 
@@ -248,8 +258,9 @@ test("MCP update and delete stay within the configured default scope", async () 
     id: 3,
     method: "tools/call",
     params: {
-      name: "memory_update",
-      arguments: { id: workbuddyRecord.id, content: "Updated by WorkBuddy." },
+      name: "memory_record",
+      arguments: {
+        action: "update", id: workbuddyRecord.id, content: "Updated by WorkBuddy." },
     },
   })) as { result?: { content?: Array<{ text: string }> } };
 
@@ -258,7 +269,7 @@ test("MCP update and delete stay within the configured default scope", async () 
   assert.equal(updated.record.content, "Updated by WorkBuddy.");
 });
 
-test("memory_recall exposes record markers through MCP", async () => {
+test("memory_context exposes record markers through MCP", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
   const handler = createMemoryMcpHandler({ memory });
 
@@ -267,8 +278,9 @@ test("memory_recall exposes record markers through MCP", async () => {
     id: 1,
     method: "tools/call",
     params: {
-      name: "memory_write",
+      name: "memory_record",
       arguments: {
+        action: "write",
         content: "Cursor session established the release checklist.",
         kind: "decision",
         scopeType: "agent",
@@ -288,8 +300,9 @@ test("memory_recall exposes record markers through MCP", async () => {
     id: 2,
     method: "tools/call",
     params: {
-      name: "memory_recall",
+      name: "memory_context",
       arguments: {
+        action: "recall",
         message: "release checklist",
         maxChars: 1000,
       },
@@ -300,16 +313,16 @@ test("memory_recall exposes record markers through MCP", async () => {
   assert.match(recall.injectedContext, /source: cursor_session_import/);
   assert.match(recall.injectedContext, /tags: cursor, session, release/);
   assert.match(recall.injectedContext, /"sessionId":"cursor-1"/);
-  assert.match(recall.navigationContext, /memory_get/);
+  assert.match(recall.navigationContext, /memory_record/);
   assert.equal(recall.hits?.[0]?.record.source, "cursor_session_import");
-  assert.equal(recall.hits?.[0]?.evidence?.tools?.[0]?.name, "memory_get");
+  assert.equal(recall.hits?.[0]?.evidence?.tools?.[0]?.name, "memory_record");
   assert.deepEqual(recall.hits?.[0]?.record.metadata, {
     sessionId: "cursor-1",
     taskId: "cursor-session-cursor-1",
   });
 });
 
-test("memory_list and memory_delete work through MCP", async () => {
+test("memory_record list and delete work through MCP", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
   const handler = createMemoryMcpHandler({ memory });
 
@@ -319,8 +332,9 @@ test("memory_list and memory_delete work through MCP", async () => {
     id: 1,
     method: "tools/call",
     params: {
-      name: "memory_write",
+      name: "memory_record",
       arguments: {
+        action: "write",
         content: "Test memory for deletion.",
         kind: "fact",
         scopeType: "user",
@@ -339,8 +353,9 @@ test("memory_list and memory_delete work through MCP", async () => {
     id: 2,
     method: "tools/call",
     params: {
-      name: "memory_list",
-      arguments: { scopeType: "user", scopeId: "bob" },
+      name: "memory_record",
+      arguments: {
+        action: "list", scopeType: "user", scopeId: "bob" },
     },
   })) as { result?: { content?: Array<{ text: string }> } };
 
@@ -353,8 +368,9 @@ test("memory_list and memory_delete work through MCP", async () => {
     id: 3,
     method: "tools/call",
     params: {
-      name: "memory_delete",
-      arguments: { id: recordId, scopeType: "user", scopeId: "bob" },
+      name: "memory_record",
+      arguments: {
+        action: "delete", id: recordId, scopeType: "user", scopeId: "bob" },
     },
   })) as { result?: { content?: Array<{ text: string }> } };
 
@@ -367,8 +383,9 @@ test("memory_list and memory_delete work through MCP", async () => {
     id: 4,
     method: "tools/call",
     params: {
-      name: "memory_list",
-      arguments: { scopeType: "user", scopeId: "bob" },
+      name: "memory_record",
+      arguments: {
+        action: "list", scopeType: "user", scopeId: "bob" },
     },
   })) as { result?: { content?: Array<{ text: string }> } };
 
@@ -376,7 +393,7 @@ test("memory_list and memory_delete work through MCP", async () => {
   assert.equal(listedAfter.records?.length, 0);
 });
 
-test("memory_session_commit stores host-distilled session state without calling an inferencer", async () => {
+test("memory_session stores host-distilled session state without calling an inferencer", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
   const handler = createMemoryMcpHandler({ memory });
 
@@ -385,8 +402,9 @@ test("memory_session_commit stores host-distilled session state without calling 
     id: 1,
     method: "tools/call",
     params: {
-      name: "memory_session_commit",
+      name: "memory_session",
       arguments: {
+        action: "commit",
         agent: "codex",
         sessionId: "session-commit-1",
         cwd: "/repo",
@@ -428,8 +446,9 @@ test("memory_session_commit stores host-distilled session state without calling 
     id: 2,
     method: "tools/call",
     params: {
-      name: "memory_session_commit",
+      name: "memory_session",
       arguments: {
+        action: "commit",
         agent: "codex",
         sessionId: "session-commit-1",
         messageCount: 2,
@@ -447,8 +466,9 @@ test("memory_session_commit stores host-distilled session state without calling 
     id: 3,
     method: "tools/call",
     params: {
-      name: "memory_session_commit",
+      name: "memory_session",
       arguments: {
+        action: "commit",
         agent: "codex",
         sessionId: "session-commit-1",
         messageCount: 4,
@@ -474,7 +494,7 @@ test("memory_session_commit stores host-distilled session state without calling 
   assert.equal(projectRecords[0]?.metadata?.origin, "host_session_commit");
 });
 
-test("memory_recall respects maxChars through MCP", async () => {
+test("memory_context respects maxChars through MCP", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
   const handler = createMemoryMcpHandler({ memory });
 
@@ -483,8 +503,9 @@ test("memory_recall respects maxChars through MCP", async () => {
     id: 1,
     method: "tools/call",
     params: {
-      name: "memory_write",
+      name: "memory_record",
       arguments: {
+        action: "write",
         content: "alpha ".repeat(100).trim(),
         scopeType: "user",
         scopeId: "alice",
@@ -497,8 +518,9 @@ test("memory_recall respects maxChars through MCP", async () => {
     id: 2,
     method: "tools/call",
     params: {
-      name: "memory_recall",
+      name: "memory_context",
       arguments: {
+        action: "recall",
         message: "alpha",
         scopeType: "user",
         scopeId: "alice",

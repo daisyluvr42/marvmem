@@ -199,20 +199,12 @@ For custom hosts, `createMemoryMcpHandler()` exposes JSON-RPC 2.0 tools.
 
 | Tool | Description |
 |------|-------------|
-| `memory_search` | Search palace records by query |
-| `memory_get` | Fetch one record by id |
-| `memory_list` | List records, optionally filtered by scope |
-| `memory_write` | Persist a durable record |
-| `memory_update` | Update an existing record by id |
-| `memory_delete` | Delete a record by id |
-| `memory_recall` | Build prompt-ready recall |
-| `memory_retrieve` | Run the full retrieval stack |
-| `memory_active_get` | Read active context and experience |
-| `memory_active_distill` | Distill active context or experience |
-| `memory_task_append` | Append entry to task context |
-| `memory_task_window` | Build prompt-ready task context |
-| `memory_maintenance_calibrate` | Run experience calibration |
-| `memory_maintenance_rebuild` | Rebuild experience from palace fragments |
+| `memory_record` | Search, fetch, list, write, update, or delete long-term memory records |
+| `memory_context` | Build prompt-ready recall or run the retrieval stack |
+| `memory_active` | Read or distill active context and experience |
+| `memory_session` | Commit host-distilled session summaries |
+| `memory_task` | Append task entries or build task context windows |
+| `memory_maintenance` | Run experience calibration or rebuild active experience |
 
 ```ts
 import { createMemoryMcpHandler } from "marvmem/mcp";

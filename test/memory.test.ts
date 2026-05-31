@@ -50,12 +50,12 @@ test("search hits expose evidence refs for exact follow-up reads", async () => {
 
   assert.equal(hits[0]?.evidence.recordId, record.id);
   assert.deepEqual(hits[0]?.evidence.tools[0], {
-    name: "memory_get",
-    arguments: { id: record.id },
+    name: "memory_record",
+    arguments: { action: "get", id: record.id },
   });
   assert.deepEqual(hits[0]?.evidence.tools[1], {
-    name: "memory_task_window",
-    arguments: { taskId: "codex:release-1", message: "<current query>" },
+    name: "memory_task",
+    arguments: { action: "window", taskId: "codex:release-1", message: "<current query>" },
   });
 });
 
@@ -74,7 +74,7 @@ test("builds memory navigation from existing records", async () => {
   });
 
   assert.match(navigation, /Memory navigation/);
-  assert.match(navigation, new RegExp(`memory_get\\(id=${record.id}\\)`));
+  assert.match(navigation, new RegExp(`memory_record\\(action=get, id=${record.id}\\)`));
   assert.match(navigation, /lightweight and point back to exact records/);
 });
 

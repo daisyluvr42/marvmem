@@ -54,7 +54,7 @@ flowchart LR
   Merge --> Prompt["injectedContext"]
 ```
 
-The recall result can expose both prompt-ready text and structured hits. MCP `memory_recall` keeps the full `hits[].record`, including `source`, `tags`, and `metadata`.
+The recall result can expose both prompt-ready text and structured hits. MCP `memory_context` with `action: "recall"` keeps the full `hits[].record`, including `source`, `tags`, and `metadata`.
 
 ## Turn Capture Flow
 
@@ -106,4 +106,3 @@ For project-aware platform usage, repo scope is project-qualified internally. Fo
 - Larger collections should use the retrieval stack with remote embeddings or QMD.
 - Active memory is stored in SQLite. Markdown bridge adapters mirror durable memory files for host compatibility.
 - Generic adapters stay thin. Host-specific wrappers should reuse the host's model/provider/auth where possible.
-

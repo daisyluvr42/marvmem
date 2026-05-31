@@ -5,10 +5,10 @@ import { createMemoryRuntime, type MemoryRuntime } from "../runtime/index.js";
 type JsonRpcId = string | number | null;
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2024-11-05"] as const;
 const SERVER_INSTRUCTIONS =
-  "Use memory_recall without scopeType/scopeId when continuity or prior decisions matter, so MarvMem can search shared memory across agents. " +
-  "Use memory_write for durable user preferences, facts, or explicit remember requests. " +
-  "Use memory_session_commit when the host agent has already distilled a session. " +
-  "Use memory_task_append and memory_task_window for longer task-focused work.";
+  "Use memory_context with action='recall' and no scopeType/scopeId when continuity or prior decisions matter, so MarvMem can search shared memory across agents. " +
+  "Use memory_record with action='write' for durable user preferences, facts, or explicit remember requests. " +
+  "Use memory_session with action='commit' when the host agent has already distilled a session. " +
+  "Use memory_task with action='append' or action='window' for longer task-focused work.";
 
 export type MemoryToolDefinition = {
   name: string;
@@ -24,7 +24,6 @@ export function createMemoryToolSet(params: {
   defaultScopes?: MemoryScope[];
   onMemoryChanged?: () => Promise<void>;
 }): MemoryToolDefinition[] {
-  const hasDefaultScope = Boolean(params.defaultScopes?.[0]);
   const runtime =
     params.runtime ??
     createMemoryRuntime({
@@ -34,319 +33,207 @@ export function createMemoryToolSet(params: {
 
   return [
     {
-      name: "memory_search",
-      description: "Search long-term memory records by query.",
+      name: "memory_record",
+      description: "Search, fetch, list, write, update, or delete long-term memory records.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
         properties: {
+          action: { type: "string", enum: ["search", "get", "list", "write", "update", "delete"] },
+          id: { type: "string" },
           query: { type: "string" },
+          scopeType: { type: "string" },
+          scopeId: { type: "string" },
+          content: { type: "string" },
+          kind: { type: "string" },
+          summary: { type: "string" },
+          confidence: { type: "number" },
+          importance: { type: "number" },
+          source: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+          metadata: { type: "object", additionalProperties: true },
+          limit: { type: "number" },
+          maxResults: { type: "number" },
+          minScore: { type: "number" },
+        },
+        required: ["action"],
+      },
+      mutatesMemory: true,
+      execute: async (args) => {
+        const action = expectString(args.action, "action");
+        if (action === "search") {
+          return {
+            hits: await params.memory.search(expectString(args.query, "query"), {
+              scopes: parseReadScopeArgs(args),
+              maxResults: expectNumber(args.maxResults),
+              minScore: expectNumber(args.minScore),
+            }),
+          };
+        }
+        if (action === "get") {
+          return { record: await params.memory.get(expectString(args.id, "id")) };
+        }
+        if (action === "list") {
+          return {
+            records: await params.memory.list({
+              scopes: parseReadScopeArgs(args),
+              limit: expectNumber(args.limit),
+            }),
+          };
+        }
+        if (action === "write") {
+          const scope = requireScope(args, params.defaultScopes);
+          return {
+            record: await params.memory.remember({
+              scope,
+              kind: optionalString(args.kind) ?? "note",
+              content: expectString(args.content, "content"),
+              summary: optionalString(args.summary),
+              confidence: expectNumber(args.confidence),
+              importance: expectNumber(args.importance),
+              source: optionalString(args.source),
+              tags: Array.isArray(args.tags)
+                ? args.tags.filter((entry): entry is string => typeof entry === "string")
+                : undefined,
+              metadata: asRecord(args.metadata) ?? undefined,
+            }),
+          };
+        }
+        if (action === "update") {
+          const id = expectString(args.id, "id");
+          const scope = requireDestructiveScope(args, params.defaultScopes);
+          const existing = await params.memory.get(id);
+          if (!existing || !sameScope(existing.scope, scope)) {
+            return { record: null, updated: false };
+          }
+          const patch: Record<string, unknown> = {};
+          if (args.content !== undefined) patch.content = args.content;
+          if (args.kind !== undefined) patch.kind = args.kind;
+          if (args.summary !== undefined) patch.summary = args.summary;
+          if (args.confidence !== undefined) patch.confidence = args.confidence;
+          if (args.importance !== undefined) patch.importance = args.importance;
+          if (args.source !== undefined) patch.source = args.source;
+          if (args.tags !== undefined) patch.tags = args.tags;
+          if (args.metadata !== undefined) patch.metadata = asRecord(args.metadata);
+          const record = await params.memory.update(id, patch);
+          return { record, updated: record !== null };
+        }
+        if (action === "delete") {
+          const id = expectString(args.id, "id");
+          const scope = requireDestructiveScope(args, params.defaultScopes);
+          const existing = await params.memory.get(id);
+          if (!existing || !sameScope(existing.scope, scope)) {
+            return { deleted: false };
+          }
+          return { deleted: await params.memory.forget(id) };
+        }
+        throw new Error("action must be search, get, list, write, update, or delete");
+      },
+    },
+    {
+      name: "memory_context",
+      description: "Build prompt-ready recall context or run the configured retrieval stack.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          action: { type: "string", enum: ["recall", "retrieve"] },
+          message: { type: "string" },
+          query: { type: "string" },
+          recentMessages: { type: "array", items: { type: "string" } },
           scopeType: { type: "string" },
           scopeId: { type: "string" },
           maxResults: { type: "number" },
           minScore: { type: "number" },
+          maxChars: { type: "number" },
         },
-        required: ["query"],
+        required: ["action"],
       },
       execute: async (args) => {
-        const query = expectString(args.query, "query");
+        const action = expectString(args.action, "action");
         const scopes = parseReadScopeArgs(args);
-        return {
-          hits: await params.memory.search(query, {
+        if (action === "recall") {
+          return await runtime.buildRecallContext({
+            userMessage: expectString(args.message, "message"),
+            recentMessages: Array.isArray(args.recentMessages)
+              ? args.recentMessages.filter((entry): entry is string => typeof entry === "string")
+              : undefined,
+            scopes,
+            maxChars: expectNumber(args.maxChars),
+          });
+        }
+        if (action === "retrieve") {
+          return await params.memory.retrieval.recall(expectString(args.query, "query"), {
             scopes,
             maxResults: expectNumber(args.maxResults),
             minScore: expectNumber(args.minScore),
-          }),
-        };
-      },
-    },
-    {
-      name: "memory_get",
-      description: "Fetch one memory record by id.",
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          id: { type: "string" },
-        },
-        required: ["id"],
-      },
-      execute: async (args) => {
-        const id = expectString(args.id, "id");
-        return {
-          record: await params.memory.get(id),
-        };
-      },
-    },
-    {
-      name: "memory_list",
-      description: "List memory records, optionally filtered by scope.",
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          scopeType: { type: "string" },
-          scopeId: { type: "string" },
-          limit: { type: "number" },
-        },
-      },
-      execute: async (args) => {
-        const scopes = parseReadScopeArgs(args);
-        return {
-          records: await params.memory.list({
-            scopes,
-            limit: expectNumber(args.limit),
-          }),
-        };
-      },
-    },
-    {
-      name: "memory_write",
-      description: "Persist a durable memory record. Automatically merges with similar existing memories.",
-      mutatesMemory: true,
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          content: { type: "string" },
-          kind: { type: "string" },
-          summary: { type: "string" },
-          scopeType: { type: "string" },
-          scopeId: { type: "string" },
-          confidence: { type: "number" },
-          importance: { type: "number" },
-          source: { type: "string" },
-          tags: {
-            type: "array",
-            items: { type: "string" },
-          },
-          metadata: {
-            type: "object",
-            additionalProperties: true,
-          },
-        },
-        required: hasDefaultScope ? ["content"] : ["content", "scopeType", "scopeId"],
-      },
-      execute: async (args) => {
-        const scope = requireScope(args, params.defaultScopes);
-        return {
-          record: await params.memory.remember({
-            scope,
-            kind: optionalString(args.kind) ?? "note",
-            content: expectString(args.content, "content"),
-            summary: optionalString(args.summary),
-            confidence: expectNumber(args.confidence),
-            importance: expectNumber(args.importance),
-            source: optionalString(args.source),
-            tags: Array.isArray(args.tags)
-              ? args.tags.filter((entry): entry is string => typeof entry === "string")
-              : undefined,
-            metadata: asRecord(args.metadata) ?? undefined,
-          }),
-        };
-      },
-    },
-    {
-      name: "memory_update",
-      description: "Update an existing memory record by id.",
-      mutatesMemory: true,
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          id: { type: "string" },
-          scopeType: { type: "string" },
-          scopeId: { type: "string" },
-          content: { type: "string" },
-          kind: { type: "string" },
-          summary: { type: "string" },
-          confidence: { type: "number" },
-          importance: { type: "number" },
-          source: { type: "string" },
-          tags: {
-            type: "array",
-            items: { type: "string" },
-          },
-          metadata: {
-            type: "object",
-            additionalProperties: true,
-          },
-        },
-        required: hasDefaultScope ? ["id"] : ["id", "scopeType", "scopeId"],
-      },
-      execute: async (args) => {
-        const id = expectString(args.id, "id");
-        const scope = requireDestructiveScope(args, params.defaultScopes);
-        const existing = await params.memory.get(id);
-        if (!existing || !sameScope(existing.scope, scope)) {
-          return { record: null, updated: false };
+            maxChars: expectNumber(args.maxChars),
+          });
         }
-        const patch: Record<string, unknown> = {};
-        if (args.content !== undefined) patch.content = args.content;
-        if (args.kind !== undefined) patch.kind = args.kind;
-        if (args.summary !== undefined) patch.summary = args.summary;
-        if (args.confidence !== undefined) patch.confidence = args.confidence;
-        if (args.importance !== undefined) patch.importance = args.importance;
-        if (args.source !== undefined) patch.source = args.source;
-        if (args.tags !== undefined) patch.tags = args.tags;
-        if (args.metadata !== undefined) patch.metadata = asRecord(args.metadata);
-        const record = await params.memory.update(id, patch);
-        return { record, updated: record !== null };
+        throw new Error("action must be recall or retrieve");
       },
     },
     {
-      name: "memory_delete",
-      description: "Delete a memory record by id. Irreversible.",
-      mutatesMemory: true,
+      name: "memory_active",
+      description: "Read or distill active context and active experience for a scope.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
         properties: {
-          id: { type: "string" },
-          scopeType: { type: "string" },
-          scopeId: { type: "string" },
-        },
-        required: hasDefaultScope ? ["id"] : ["id", "scopeType", "scopeId"],
-      },
-      execute: async (args) => {
-        const id = expectString(args.id, "id");
-        const scope = requireDestructiveScope(args, params.defaultScopes);
-        const existing = await params.memory.get(id);
-        if (!existing || !sameScope(existing.scope, scope)) {
-          return { deleted: false };
-        }
-        const deleted = await params.memory.forget(id);
-        return { deleted };
-      },
-    },
-    {
-      name: "memory_recall",
-      description: "Recall prompt-ready memory context for a new turn.",
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          message: { type: "string" },
-          recentMessages: {
-            type: "array",
-            items: { type: "string" },
-          },
-          scopeType: { type: "string" },
-          scopeId: { type: "string" },
-          maxChars: { type: "number" },
-        },
-        required: ["message"],
-      },
-      execute: async (args) => {
-        const message = expectString(args.message, "message");
-        const scopes = parseReadScopeArgs(args);
-        return await runtime.buildRecallContext({
-          userMessage: message,
-          recentMessages: Array.isArray(args.recentMessages)
-            ? args.recentMessages.filter((entry): entry is string => typeof entry === "string")
-            : undefined,
-          scopes,
-          maxChars: expectNumber(args.maxChars),
-        });
-      },
-    },
-    {
-      name: "memory_retrieve",
-      description: "Run the configured retrieval stack, including remote embeddings and optional QMD.",
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          query: { type: "string" },
-          scopeType: { type: "string" },
-          scopeId: { type: "string" },
-          maxResults: { type: "number" },
-          minScore: { type: "number" },
-          maxChars: { type: "number" },
-        },
-        required: ["query"],
-      },
-      execute: async (args) => {
-        const query = expectString(args.query, "query");
-        const scopes = parseReadScopeArgs(args);
-        return await params.memory.retrieval.recall(query, {
-          scopes,
-          maxResults: expectNumber(args.maxResults),
-          minScore: expectNumber(args.minScore),
-          maxChars: expectNumber(args.maxChars),
-        });
-      },
-    },
-    {
-      name: "memory_active_get",
-      description: "Read active context and active experience for a scope.",
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          scopeType: { type: "string" },
-          scopeId: { type: "string" },
-        },
-        required: hasDefaultScope ? [] : ["scopeType", "scopeId"],
-      },
-      execute: async (args) => {
-        const scope = requireScope(args, params.defaultScopes);
-        return {
-          context: await params.memory.active.read("context", scope),
-          experience: await params.memory.active.read("experience", scope),
-        };
-      },
-    },
-    {
-      name: "memory_active_distill",
-      description: "Distill active context or active experience for a scope.",
-      mutatesMemory: true,
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
+          action: { type: "string", enum: ["get", "distill"] },
           kind: { type: "string" },
           content: { type: "string" },
           scopeType: { type: "string" },
           scopeId: { type: "string" },
           maxChars: { type: "number" },
         },
-        required: hasDefaultScope ? ["kind", "content"] : ["kind", "content", "scopeType", "scopeId"],
+        required: ["action"],
       },
+      mutatesMemory: true,
       execute: async (args) => {
+        const action = expectString(args.action, "action");
         const scope = requireScope(args, params.defaultScopes);
-        const kind = expectString(args.kind, "kind");
-        const content = expectString(args.content, "content");
-        if (kind === "context") {
+        if (action === "get") {
           return {
-            document: await params.memory.active.distillContext({
-              scope,
-              sessionSummary: content,
-              maxChars: expectNumber(args.maxChars),
-            }),
+            context: await params.memory.active.read("context", scope),
+            experience: await params.memory.active.read("experience", scope),
           };
         }
-        if (kind === "experience") {
-          return {
-            document: await params.memory.active.distillExperience({
-              scope,
-              newData: content,
-              maxChars: expectNumber(args.maxChars),
-            }),
-          };
+        if (action === "distill") {
+          const kind = expectString(args.kind, "kind");
+          const content = expectString(args.content, "content");
+          if (kind === "context") {
+            return {
+              document: await params.memory.active.distillContext({
+                scope,
+                sessionSummary: content,
+                maxChars: expectNumber(args.maxChars),
+              }),
+            };
+          }
+          if (kind === "experience") {
+            return {
+              document: await params.memory.active.distillExperience({
+                scope,
+                newData: content,
+                maxChars: expectNumber(args.maxChars),
+              }),
+            };
+          }
+          throw new Error("kind must be 'context' or 'experience'");
         }
-        throw new Error("kind must be 'context' or 'experience'");
+        throw new Error("action must be get or distill");
       },
     },
     {
-      name: "memory_session_commit",
-      description:
-        "Commit a host-distilled session summary. The host agent supplies the summary; MarvMem only stores and updates it.",
+      name: "memory_session",
+      description: "Commit a host-distilled session summary. The host agent supplies the summary; MarvMem only stores and updates it.",
       mutatesMemory: true,
       inputSchema: {
         type: "object",
         additionalProperties: false,
         properties: {
+          action: { type: "string", enum: ["commit"] },
           agent: { type: "string" },
           sessionId: { type: "string" },
           taskId: { type: "string" },
@@ -367,10 +254,7 @@ export function createMemoryToolSet(params: {
                 content: { type: "string" },
                 summary: { type: "string" },
                 tokenCount: { type: "number" },
-                metadata: {
-                  type: "object",
-                  additionalProperties: true,
-                },
+                metadata: { type: "object", additionalProperties: true },
               },
               required: ["role", "content"],
             },
@@ -389,22 +273,20 @@ export function createMemoryToolSet(params: {
                 confidence: { type: "number" },
                 importance: { type: "number" },
                 source: { type: "string" },
-                tags: {
-                  type: "array",
-                  items: { type: "string" },
-                },
-                metadata: {
-                  type: "object",
-                  additionalProperties: true,
-                },
+                tags: { type: "array", items: { type: "string" } },
+                metadata: { type: "object", additionalProperties: true },
               },
               required: ["content"],
             },
           },
         },
-        required: ["agent", "sessionId", "rollingSummary"],
+        required: ["action", "agent", "sessionId", "rollingSummary"],
       },
       execute: async (args) => {
+        const action = expectString(args.action, "action");
+        if (action !== "commit") {
+          throw new Error("action must be commit");
+        }
         const agent = expectString(args.agent, "agent");
         const sessionId = expectString(args.sessionId, "sessionId");
         const rollingSummary = expectString(args.rollingSummary, "rollingSummary");
@@ -528,108 +410,95 @@ export function createMemoryToolSet(params: {
       },
     },
     {
-      name: "memory_task_append",
-      description: "Append an entry into task context, creating the task when needed.",
+      name: "memory_task",
+      description: "Append entries to task context or build a prompt-ready task window.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
         properties: {
+          action: { type: "string", enum: ["append", "window"] },
           taskId: { type: "string" },
           title: { type: "string" },
           role: { type: "string" },
           content: { type: "string" },
-          scopeType: { type: "string" },
-          scopeId: { type: "string" },
-        },
-        required: ["taskId", "role", "content"],
-      },
-      execute: async (args) => {
-        const taskId = expectString(args.taskId, "taskId");
-        let task = await params.memory.task.get(taskId);
-        if (!task) {
-          const scope = parseScopeArgs(args, params.defaultScopes)?.[0];
-          if (!scope) {
-            throw new Error("scopeType and scopeId are required when creating a task");
-          }
-          task = await params.memory.task.create({
-            taskId,
-            scope,
-            title: optionalString(args.title) ?? taskId,
-          });
-        }
-        const entry = await params.memory.task.appendEntry({
-          taskId,
-          role: expectString(args.role, "role") as "user" | "assistant" | "system" | "tool",
-          content: expectString(args.content, "content"),
-        });
-        return { task, entry };
-      },
-    },
-    {
-      name: "memory_task_window",
-      description: "Build a prompt-ready task context window.",
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          taskId: { type: "string" },
           message: { type: "string" },
           toolContext: { type: "string" },
           maxChars: { type: "number" },
+          scopeType: { type: "string" },
+          scopeId: { type: "string" },
         },
-        required: ["taskId", "message"],
+        required: ["action", "taskId"],
       },
+      mutatesMemory: true,
       execute: async (args) => {
-        return await params.memory.task.buildWindow({
-          taskId: expectString(args.taskId, "taskId"),
-          currentQuery: expectString(args.message, "message"),
-          toolContext: optionalString(args.toolContext),
-          maxChars: expectNumber(args.maxChars),
-        });
+        const action = expectString(args.action, "action");
+        const taskId = expectString(args.taskId, "taskId");
+        if (action === "append") {
+          let task = await params.memory.task.get(taskId);
+          if (!task) {
+            const scope = parseScopeArgs(args, params.defaultScopes)?.[0];
+            if (!scope) {
+              throw new Error("scopeType and scopeId are required when creating a task");
+            }
+            task = await params.memory.task.create({
+              taskId,
+              scope,
+              title: optionalString(args.title) ?? taskId,
+            });
+          }
+          const entry = await params.memory.task.appendEntry({
+            taskId,
+            role: expectString(args.role, "role") as "user" | "assistant" | "system" | "tool",
+            content: expectString(args.content, "content"),
+          });
+          return { task, entry };
+        }
+        if (action === "window") {
+          return await params.memory.task.buildWindow({
+            taskId,
+            currentQuery: expectString(args.message, "message"),
+            toolContext: optionalString(args.toolContext),
+            maxChars: expectNumber(args.maxChars),
+          });
+        }
+        throw new Error("action must be append or window");
       },
     },
     {
-      name: "memory_maintenance_calibrate",
-      description: "Run experience calibration for a scope.",
+      name: "memory_maintenance",
+      description: "Run maintenance operations for active experience.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
         properties: {
+          action: { type: "string", enum: ["calibrate", "rebuild"] },
           scopeType: { type: "string" },
           scopeId: { type: "string" },
           maxChars: { type: "number" },
         },
-        required: hasDefaultScope ? [] : ["scopeType", "scopeId"],
+        required: ["action"],
       },
+      mutatesMemory: true,
       execute: async (args) => {
-        return {
-          result: await params.memory.maintenance.calibrateExperience({
-            scope: requireScope(args, params.defaultScopes),
-            maxChars: expectNumber(args.maxChars),
-          }),
-        };
-      },
-    },
-    {
-      name: "memory_maintenance_rebuild",
-      description: "Rebuild active experience from recent long-term memory fragments.",
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          scopeType: { type: "string" },
-          scopeId: { type: "string" },
-          maxChars: { type: "number" },
-        },
-        required: hasDefaultScope ? [] : ["scopeType", "scopeId"],
-      },
-      execute: async (args) => {
-        return {
-          result: await params.memory.maintenance.rebuildExperience({
-            scope: requireScope(args, params.defaultScopes),
-            maxChars: expectNumber(args.maxChars),
-          }),
-        };
+        const action = expectString(args.action, "action");
+        const scope = requireScope(args, params.defaultScopes);
+        if (action === "calibrate") {
+          return {
+            result: await params.memory.maintenance.calibrateExperience({
+              scope,
+              maxChars: expectNumber(args.maxChars),
+            }),
+          };
+        }
+        if (action === "rebuild") {
+          return {
+            result: await params.memory.maintenance.rebuildExperience({
+              scope,
+              maxChars: expectNumber(args.maxChars),
+            }),
+          };
+        }
+        throw new Error("action must be calibrate or rebuild");
       },
     },
   ];

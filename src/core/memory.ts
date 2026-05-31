@@ -849,17 +849,17 @@ export function formatMemoryNavigation(records: MemoryRecord[], maxChars: number
   }
   const lines = [
     "Memory navigation:",
-    "Use memory_get(id) to inspect exact records; use memory_task_window for task-linked context.",
+    "Use memory_record(action=get, id=...) to inspect exact records; use memory_task(action=window, taskId=..., message=current query) for task-linked context.",
     "",
   ];
   let used = lines.join("\n").length;
   for (const record of records) {
     const summary = (record.summary?.trim() || record.content.trim()).replace(/\s+/g, " ");
     const taskId = stringMetadata(record.metadata, "taskId");
-    const taskLine = taskId ? ` task=memory_task_window(taskId=${taskId}, message=current query)` : "";
+    const taskLine = taskId ? ` task=memory_task(action=window, taskId=${taskId}, message=current query)` : "";
     const line =
       `- ${record.kind} ${record.scope.type}:${record.scope.id} id=${record.id} ` +
-      `get=memory_get(id=${record.id})${taskLine} summary=${summary}`;
+      `get=memory_record(action=get, id=${record.id})${taskLine} summary=${summary}`;
     if (used + line.length + 1 > maxChars) {
       break;
     }
@@ -872,15 +872,15 @@ export function formatMemoryNavigation(records: MemoryRecord[], maxChars: number
 function buildEvidenceRef(record: MemoryRecord): MemoryEvidenceRef {
   const tools: MemoryEvidenceRef["tools"] = [
     {
-      name: "memory_get",
-      arguments: { id: record.id },
+      name: "memory_record",
+      arguments: { action: "get", id: record.id },
     },
   ];
   const taskId = stringMetadata(record.metadata, "taskId");
   if (taskId) {
     tools.push({
-      name: "memory_task_window",
-      arguments: { taskId, message: "<current query>" },
+      name: "memory_task",
+      arguments: { action: "window", taskId, message: "<current query>" },
     });
   }
   return {

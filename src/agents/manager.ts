@@ -444,8 +444,8 @@ function instructionBlock(agent: AgentId): string {
   return `<!-- marvmem-agent-instructions:start -->
 Memory lookup:
 
-- If a task may depend on user-specific preferences, prior project decisions, repo conventions, or earlier troubleshooting history, query MarvMem before answering or editing. Prefer a lightweight \`memory_recall\` using the current request. For cross-agent continuity, omit scope first so MarvMem can search the shared user memory store; for narrow lookups or durable writes, use \`agent:${scopeId}\`. Skip this for trivial, fully self-contained requests.
-- After substantial work or when closing a session, distill the session with the current host model and call \`memory_session_commit\` with the rolling summary, any new transcript entries, and durable facts/preferences/decisions. Use \`agent:${scopeId}\` for the session memory unless a narrower project/repo scope is clearly available.
+- If a task may depend on user-specific preferences, prior project decisions, repo conventions, or earlier troubleshooting history, query MarvMem before answering or editing. Prefer a lightweight \`memory_context\` call with \`action: "recall"\` using the current request. For cross-agent continuity, omit scope first so MarvMem can search the shared user memory store; for narrow lookups or durable writes, use \`agent:${scopeId}\`. Skip this for trivial, fully self-contained requests.
+- After substantial work or when closing a session, distill the session with the current host model and call \`memory_session\` with \`action: "commit"\`, the rolling summary, any new transcript entries, and durable facts/preferences/decisions. Use \`agent:${scopeId}\` for the session memory unless a narrower project/repo scope is clearly available.
 <!-- marvmem-agent-instructions:end -->`;
 }
 

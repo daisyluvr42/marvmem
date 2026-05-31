@@ -42,8 +42,9 @@ test("stdio MCP server negotiates protocol version and handles tool calls", asyn
       id: 2,
       method: "tools/call",
       params: {
-        name: "memory_write",
+        name: "memory_record",
         arguments: {
+          action: "write",
           content: "User prefers concise Chinese replies.",
           kind: "preference",
           scopeType: "user",
@@ -63,7 +64,7 @@ test("stdio MCP server negotiates protocol version and handles tool calls", asyn
     .map((line) => JSON.parse(line));
 
   assert.equal(messages[0]?.result?.protocolVersion, "2025-06-18");
-  assert.match(messages[0]?.result?.instructions ?? "", /memory_recall/);
+  assert.match(messages[0]?.result?.instructions ?? "", /memory_context/);
 
   const writePayload = JSON.parse(messages[1]?.result?.content?.[0]?.text ?? "{}");
   assert.equal(writePayload.record?.scope?.type, "user");

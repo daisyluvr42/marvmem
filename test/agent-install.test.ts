@@ -24,7 +24,7 @@ test("agent installer writes global Codex MCP config and instruction block", asy
     assert.equal(instructions.match(/marvmem-agent-instructions:start/g)?.length, 1);
     assert.match(instructions, /omit scope first/);
     assert.match(instructions, /agent:codex/);
-    assert.match(instructions, /memory_session_commit/);
+    assert.match(instructions, /memory_session/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -60,11 +60,11 @@ test("agent installer writes Cursor, Copilot, and Antigravity MCP configs and in
     const cursorRule = await readFile(join(root, ".cursor", "rules", "marvmem.mdc"), "utf8");
     assert.match(cursorRule, /alwaysApply: true/);
     assert.match(cursorRule, /agent:cursor/);
-    assert.match(cursorRule, /memory_session_commit/);
+    assert.match(cursorRule, /memory_session/);
 
     const antigravityRules = await readFile(join(root, ".gemini", "GEMINI.md"), "utf8");
     assert.match(antigravityRules, /agent:antigravity/);
-    assert.match(antigravityRules, /memory_session_commit/);
+    assert.match(antigravityRules, /memory_session/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

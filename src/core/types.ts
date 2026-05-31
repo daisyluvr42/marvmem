@@ -77,7 +77,7 @@ export type MemoryEvidenceRef = {
   tags: string[];
   metadata?: Record<string, unknown>;
   tools: Array<{
-    name: "memory_get" | "memory_task_window";
+    name: "memory_record" | "memory_task";
     arguments: Record<string, string>;
   }>;
 };

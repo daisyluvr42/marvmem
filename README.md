@@ -27,7 +27,7 @@ Most agent memory systems drift toward either full chat history or one rolling s
 - Optional OpenAI, Gemini, Voyage, or script-based embeddings
 - Active memory and task context managers
 - Runtime layer for turn capture and prompt-ready recall
-- 14 MCP tools plus local stdio MCP server
+- 6 consolidated MCP tools plus local stdio MCP server
 - Local setup for Codex, Claude Code, Cursor, GitHub Copilot, Antigravity, and WorkBuddy
 - Browser console and terminal TUI for agent setup
 - Hermes and OpenClaw compatibility adapters
