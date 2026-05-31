@@ -30,7 +30,7 @@ test("agent installer writes global Codex MCP config and instruction block", asy
   }
 });
 
-test("agent installer writes Cursor, Copilot, and Antigravity MCP configs and instructions", async () => {
+test("agent installer writes Cursor, Copilot, Antigravity, and Trae MCP configs and instructions", async () => {
   const root = await mkdtemp(join(tmpdir(), "marvmem-agent-json-"));
   const storagePath = join(root, "memory.sqlite");
   const mcpPath = join(root, "marvmem-mcp.js");
@@ -39,6 +39,7 @@ test("agent installer writes Cursor, Copilot, and Antigravity MCP configs and in
     await runInstaller("cursor", root, storagePath, mcpPath, "--skip-import");
     await runInstaller("copilot", root, storagePath, mcpPath, "--skip-import");
     await runInstaller("antigravity", root, storagePath, mcpPath, "--skip-import");
+    await runInstaller("trae", root, storagePath, mcpPath, "--skip-import");
 
     const cursor = JSON.parse(await readFile(join(root, ".cursor", "mcp.json"), "utf8"));
     assert.equal(cursor.mcpServers.marvmem.command, "node");
@@ -54,6 +55,12 @@ test("agent installer writes Cursor, Copilot, and Antigravity MCP configs and in
     assert.deepEqual(antigravity.mcpServers.marvmem.args, [mcpPath]);
     assert.equal(antigravity.mcpServers.marvmem.env.MARVMEM_STORAGE_PATH, storagePath);
 
+    const trae = JSON.parse(await readFile(join(root, "Library", "Application Support", "TRAE SOLO", "User", "mcp.json"), "utf8"));
+    assert.equal(trae.mcpServers.marvmem.command, "node");
+    assert.deepEqual(trae.mcpServers.marvmem.args, [mcpPath]);
+    assert.equal(trae.mcpServers.marvmem.env.MARVMEM_STORAGE_PATH, storagePath);
+    assert.equal(trae.mcpServers.marvmem.disabled, false);
+
     const instructions = await readFile(join(root, ".copilot", "copilot-instructions.md"), "utf8");
     assert.match(instructions, /agent:copilot/);
 
@@ -65,6 +72,11 @@ test("agent installer writes Cursor, Copilot, and Antigravity MCP configs and in
     const antigravityRules = await readFile(join(root, ".gemini", "GEMINI.md"), "utf8");
     assert.match(antigravityRules, /agent:antigravity/);
     assert.match(antigravityRules, /memory_session/);
+
+    const traeSkill = await readFile(join(root, ".trae", "skills", "marvmem-memory", "SKILL.md"), "utf8");
+    assert.match(traeSkill, /name: marvmem-memory/);
+    assert.match(traeSkill, /agent:trae/);
+    assert.match(traeSkill, /memory_session/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -214,7 +226,7 @@ test("install all can create the local service without invoking launchctl", asyn
       "3392",
     ]);
     const parsed = JSON.parse(output);
-    assert.equal(parsed.results.length, 6);
+    assert.equal(parsed.results.length, 7);
     assert.equal(parsed.service.started, false);
     assert.match(parsed.service.url, /^http:\/\/127\.0\.0\.1:3392\/console\?apiKey=mm_/);
   } finally {

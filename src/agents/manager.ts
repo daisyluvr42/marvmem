@@ -9,7 +9,7 @@ import { createMarvMem } from "../core/memory.js";
 import { installWorkBuddyMemoryTakeover } from "../adapters/workbuddy.js";
 import { openSqliteDatabase } from "../system/sqlite.js";
 
-export const AGENT_IDS = ["codex", "claude", "cursor", "copilot", "antigravity", "workbuddy"] as const;
+export const AGENT_IDS = ["codex", "claude", "cursor", "copilot", "antigravity", "workbuddy", "trae"] as const;
 
 export type AgentId = (typeof AGENT_IDS)[number];
 
@@ -128,6 +128,13 @@ export const AGENTS: Record<AgentId, AgentDefinition> = {
     defaultSessionsRoot: (home) => join(home, ".workbuddy"),
     configPath: (home) => join(home, ".workbuddy", "mcp.json"),
   },
+  trae: {
+    label: "Trae Solo",
+    scopeId: "trae",
+    defaultSessionsRoot: (home) => join(home, "Library", "Application Support", "TRAE SOLO", "User"),
+    configPath: (home) => join(home, "Library", "Application Support", "TRAE SOLO", "User", "mcp.json"),
+    instructionsPath: (home) => join(home, ".trae", "skills", "marvmem-memory", "SKILL.md"),
+  },
 };
 
 export function resolveAgentOptions(options: AgentInstallOptions = {}): ResolvedAgentInstallOptions {
@@ -228,6 +235,9 @@ export async function installInstructions(
   if (agent === "cursor") {
     return await writeCursorRule(path, instructionBlock(agent));
   }
+  if (agent === "trae") {
+    return await writeTraeSkill(path, instructionBlock(agent));
+  }
   return await writeMarkedBlock(path, instructionBlock(agent));
 }
 
@@ -290,6 +300,10 @@ async function installMcp(agent: AgentId, options: ResolvedAgentInstallOptions):
   }
   if (agent === "workbuddy") {
     await writeJsonMcpConfig(AGENTS.workbuddy.configPath(options.home), "workbuddy", options);
+    return;
+  }
+  if (agent === "trae") {
+    await writeJsonMcpConfig(AGENTS.trae.configPath(options.home), "trae", options);
     return;
   }
   await writeJsonMcpConfig(AGENTS.copilot.configPath(options.home), "copilot", options);
@@ -395,13 +409,13 @@ async function runClaudeMcpInstall(options: ResolvedAgentInstallOptions): Promis
 
 async function writeJsonMcpConfig(
   configPath: string,
-  format: "cursor" | "copilot" | "antigravity" | "workbuddy",
+  format: "cursor" | "copilot" | "antigravity" | "workbuddy" | "trae",
   options: ResolvedAgentInstallOptions,
 ): Promise<void> {
   const config = await readJsonObject(configPath);
   const servers = asObject(config.mcpServers);
   servers.marvmem =
-    format === "cursor" || format === "antigravity" || format === "workbuddy"
+    format === "cursor" || format === "antigravity" || format === "workbuddy" || format === "trae"
       ? {
           command: "node",
           args: [options.mcpPath],
@@ -415,6 +429,7 @@ async function writeJsonMcpConfig(
                 }
               : {}),
           },
+          ...(format === "trae" ? { disabled: false } : {}),
         }
       : {
           type: "local",
@@ -461,6 +476,24 @@ description: MarvMem host-mediated memory workflow
 globs:
 alwaysApply: true
 ---
+
+${block}`,
+  );
+}
+
+async function writeTraeSkill(path: string, block: string): Promise<boolean> {
+  const current = await readText(path);
+  if (current.trim()) {
+    return await writeMarkedBlock(path, block);
+  }
+  return await writeMarkedBlock(
+    path,
+    `---
+name: marvmem-memory
+description: Use MarvMem shared memory through MCP when prior decisions, user preferences, project conventions, or session continuity matter.
+---
+
+# MarvMem Memory
 
 ${block}`,
   );

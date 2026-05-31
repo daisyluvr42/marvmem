@@ -39,7 +39,7 @@ const HELP = `marvmem-agent
 Install MarvMem globally for coding agents, or launch the local setup UI.
 
 Usage:
-  marvmem-agent install <codex|claude|cursor|copilot|antigravity|workbuddy|all>
+  marvmem-agent install <codex|claude|cursor|copilot|antigravity|workbuddy|trae|all>
   marvmem-agent service <install|start|stop|restart|status|uninstall|url>
   marvmem-agent serve
   marvmem-agent ui
