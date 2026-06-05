@@ -13,7 +13,10 @@ type ExperienceMetadata = {
   entryStats?: ExperienceEntryStat[];
   lastCalibrationAt?: string;
   lastRebuildAt?: string;
+  lastDeepGovernedAt?: string;
 };
+
+const DEFAULT_DEEP_CONSOLIDATE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export class MaintenanceManager {
   private readonly now: () => Date;
@@ -187,6 +190,51 @@ export class MaintenanceManager {
     const rebuild = await this.rebuildExperience(input);
     const calibration = await this.calibrateExperience(input);
     return { rebuild, calibration };
+  }
+
+  async deepConsolidateIfDue(input: {
+    scope: MemoryScope;
+    maxChars?: number;
+    recentLimit?: number;
+    intervalMs?: number;
+  }): Promise<
+    | { ran: false; reason: "no_inferencer" | "fresh" | "empty" }
+    | { ran: true; rebuild: ExperienceRebuildResult; calibration: ExperienceCalibrationResult }
+  > {
+    if (!this.options.inferencer) {
+      return { ran: false, reason: "no_inferencer" };
+    }
+    const now = this.now();
+    const document = await this.options.active.read("experience", input.scope);
+    const metadata = readExperienceMetadata(document);
+    const lastRun = newestTimestamp([
+      metadata.lastDeepGovernedAt,
+      metadata.lastCalibrationAt,
+      metadata.lastRebuildAt,
+    ]);
+    if (lastRun !== undefined && now.getTime() - lastRun < (input.intervalMs ?? DEFAULT_DEEP_CONSOLIDATE_INTERVAL_MS)) {
+      return { ran: false, reason: "fresh" };
+    }
+
+    const fragments = await this.loadRecentFragments(input.scope, 1);
+    if (!document?.content.trim() && fragments.length === 0) {
+      return { ran: false, reason: "empty" };
+    }
+
+    const result = await this.deepConsolidate(input);
+    const updated = await this.options.active.read("experience", input.scope);
+    if (updated) {
+      await this.options.active.write({
+        kind: "experience",
+        scope: input.scope,
+        content: updated.content,
+        metadata: {
+          ...readExperienceMetadata(updated),
+          lastDeepGovernedAt: now.toISOString(),
+        },
+      });
+    }
+    return { ran: true, ...result };
   }
 
   private async loadRecentFragments(scope: MemoryScope, limit: number): Promise<string[]> {
@@ -426,6 +474,16 @@ function tokenize(content: string): Set<string> {
 
 function normalizeText(content: string): string {
   return content.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function newestTimestamp(values: Array<string | undefined>): number | undefined {
+  const timestamps = values
+    .map((value) => value ? Date.parse(value) : Number.NaN)
+    .filter((value) => Number.isFinite(value));
+  if (timestamps.length === 0) {
+    return undefined;
+  }
+  return Math.max(...timestamps);
 }
 
 function simpleHash(content: string): string {

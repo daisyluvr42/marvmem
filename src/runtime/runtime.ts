@@ -159,6 +159,7 @@ export function createMemoryRuntime(params: {
             scope,
             sessionSummary,
           });
+          await params.memory.maintenance.deepConsolidateIfDue({ scope });
         }
       }
       return { proposals, stored, taskEntries };
@@ -185,6 +186,7 @@ export function createMemoryRuntime(params: {
         scope,
         newData: input.summary.trim(),
       });
+      await params.memory.maintenance.deepConsolidateIfDue({ scope });
       if (input.taskId) {
         await params.memory.task.addDecision({
           taskId: input.taskId,

@@ -4,10 +4,13 @@ import { createMemoryRuntime, type MemoryRuntime } from "../runtime/index.js";
 
 type JsonRpcId = string | number | null;
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2024-11-05"] as const;
+const MAINTENANCE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const ACTIVE_CONTEXT_MAX_CHARS = 400;
+const ACTIVE_EXPERIENCE_MAX_CHARS = 800;
 const SERVER_INSTRUCTIONS =
   "Use memory_context with action='recall' and no scopeType/scopeId when continuity or prior decisions matter, so MarvMem can search shared memory across agents. " +
   "Use memory_record with action='write' for durable user preferences, facts, or explicit remember requests. " +
-  "Use memory_session with action='commit' when the host agent has already distilled a session. " +
+  "Use memory_session with action='commit' when the host agent has already distilled a session; include activeContext/activeExperience when available, and follow maintenanceRequest if returned. " +
   "Use memory_task with action='append' or action='window' for longer task-focused work.";
 
 export type MemoryToolDefinition = {
@@ -227,7 +230,7 @@ export function createMemoryToolSet(params: {
     },
     {
       name: "memory_session",
-      description: "Commit a host-distilled session summary. The host agent supplies the summary; MarvMem only stores and updates it.",
+      description: "Commit a host-distilled session summary and active memory. MarvMem stores it and returns a maintenance request when deeper governance is due.",
       mutatesMemory: true,
       inputSchema: {
         type: "object",
@@ -242,6 +245,9 @@ export function createMemoryToolSet(params: {
           timestamp: { type: "string" },
           messageCount: { type: "number" },
           rollingSummary: { type: "string" },
+          activeContext: { type: "string" },
+          activeExperience: { type: "string" },
+          governanceReport: { type: "object", additionalProperties: true },
           scopeType: { type: "string" },
           scopeId: { type: "string" },
           entries: {
@@ -290,6 +296,9 @@ export function createMemoryToolSet(params: {
         const agent = expectString(args.agent, "agent");
         const sessionId = expectString(args.sessionId, "sessionId");
         const rollingSummary = expectString(args.rollingSummary, "rollingSummary");
+        const activeContext = optionalString(args.activeContext);
+        const activeExperience = optionalString(args.activeExperience);
+        const governanceReport = asRecord(args.governanceReport) ?? undefined;
         const taskId = optionalString(args.taskId) ?? `${agent}:${sessionId}`;
         const scope = parseScopeArgs(args, params.defaultScopes)?.[0];
         if (!scope) {
@@ -400,12 +409,48 @@ export function createMemoryToolSet(params: {
           );
         }
 
+        const sourceRecordIds = [
+          sessionRecord?.id,
+          ...durableRecords.map((record) => record.id),
+        ].filter((id): id is string => typeof id === "string");
+        const governanceMetadata = compactRecord({
+          lastLightGovernedAt: nowIso,
+          lastGovernedBy: agent,
+          sessionId,
+          taskId,
+          sourceRecordIds,
+          governanceReport,
+        });
+        const active = {
+          context: await writeActiveDocument({
+            memory: params.memory,
+            kind: "context",
+            scope,
+            content: activeContext ?? rollingSummary,
+            metadata: governanceMetadata,
+            maxChars: ACTIVE_CONTEXT_MAX_CHARS,
+          }),
+          experience: activeExperience
+            ? await writeActiveDocument({
+                memory: params.memory,
+                kind: "experience",
+                scope,
+                content: activeExperience,
+                metadata: governanceMetadata,
+                maxChars: ACTIVE_EXPERIENCE_MAX_CHARS,
+              })
+            : undefined,
+        };
+        const maintenanceRequest = await buildMaintenanceRequestIfDue(params.memory, scope, nowIso);
+
         return {
           task,
           state,
           sessionRecord,
           appendedEntries: appendedEntries.length,
           durableRecords,
+          active,
+          maintenanceRequest,
         };
       },
     },
@@ -466,15 +511,19 @@ export function createMemoryToolSet(params: {
     },
     {
       name: "memory_maintenance",
-      description: "Run maintenance operations for active experience.",
+      description: "Prepare or apply host-mediated active memory maintenance, or run inferencer-backed experience maintenance.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
         properties: {
-          action: { type: "string", enum: ["calibrate", "rebuild"] },
+          action: { type: "string", enum: ["prepare", "apply", "calibrate", "rebuild"] },
+          agent: { type: "string" },
           scopeType: { type: "string" },
           scopeId: { type: "string" },
           maxChars: { type: "number" },
+          activeContext: { type: "string" },
+          activeExperience: { type: "string" },
+          governanceReport: { type: "object", additionalProperties: true },
         },
         required: ["action"],
       },
@@ -482,6 +531,47 @@ export function createMemoryToolSet(params: {
       execute: async (args) => {
         const action = expectString(args.action, "action");
         const scope = requireScope(args, params.defaultScopes);
+        if (action === "prepare") {
+          return {
+            request: await buildMaintenanceRequest(params.memory, scope, new Date().toISOString()),
+          };
+        }
+        if (action === "apply") {
+          const activeContext = optionalString(args.activeContext);
+          const activeExperience = optionalString(args.activeExperience);
+          if (!activeContext && !activeExperience) {
+            throw new Error("activeContext or activeExperience is required for apply");
+          }
+          const nowIso = new Date().toISOString();
+          const governanceMetadata = compactRecord({
+            lastLightGovernedAt: nowIso,
+            lastDeepGovernedAt: nowIso,
+            lastGovernedBy: optionalString(args.agent) ?? "host",
+            governanceReport: asRecord(args.governanceReport) ?? undefined,
+          });
+          return {
+            context: activeContext
+              ? await writeActiveDocument({
+                  memory: params.memory,
+                  kind: "context",
+                  scope,
+                  content: activeContext,
+                  metadata: governanceMetadata,
+                  maxChars: ACTIVE_CONTEXT_MAX_CHARS,
+                })
+              : await params.memory.active.read("context", scope),
+            experience: activeExperience
+              ? await writeActiveDocument({
+                  memory: params.memory,
+                  kind: "experience",
+                  scope,
+                  content: activeExperience,
+                  metadata: governanceMetadata,
+                  maxChars: ACTIVE_EXPERIENCE_MAX_CHARS,
+                })
+              : await params.memory.active.read("experience", scope),
+          };
+        }
         if (action === "calibrate") {
           return {
             result: await params.memory.maintenance.calibrateExperience({
@@ -498,7 +588,7 @@ export function createMemoryToolSet(params: {
             }),
           };
         }
-        throw new Error("action must be calibrate or rebuild");
+        throw new Error("action must be prepare, apply, calibrate, or rebuild");
       },
     },
   ];
@@ -610,6 +700,87 @@ type SessionCommitDurableMemory = {
   tags?: string[];
   metadata?: Record<string, unknown>;
 };
+
+type ActiveDocumentKind = "context" | "experience";
+
+async function writeActiveDocument(input: {
+  memory: MarvMem;
+  kind: ActiveDocumentKind;
+  scope: MemoryScope;
+  content: string;
+  metadata: Record<string, unknown>;
+  maxChars: number;
+}) {
+  const current = await input.memory.active.read(input.kind, input.scope);
+  return await input.memory.active.write({
+    kind: input.kind,
+    scope: input.scope,
+    content: clampText(input.content, input.maxChars),
+    metadata: compactRecord({
+      ...(asRecord(current?.metadata) ?? {}),
+      ...input.metadata,
+    }),
+  });
+}
+
+async function buildMaintenanceRequestIfDue(
+  memory: MarvMem,
+  scope: MemoryScope,
+  nowIso: string,
+) {
+  const [context, experience] = await Promise.all([
+    memory.active.read("context", scope),
+    memory.active.read("experience", scope),
+  ]);
+  if (!isMaintenanceDue([context?.metadata, experience?.metadata], nowIso)) {
+    return undefined;
+  }
+  return await buildMaintenanceRequest(memory, scope, nowIso);
+}
+
+async function buildMaintenanceRequest(
+  memory: MarvMem,
+  scope: MemoryScope,
+  nowIso: string,
+) {
+  const [context, experience, records] = await Promise.all([
+    memory.active.read("context", scope),
+    memory.active.read("experience", scope),
+    memory.list({ scopes: [scope], limit: 12 }),
+  ]);
+  return {
+    kind: "active_memory_maintenance",
+    scope,
+    generatedAt: nowIso,
+    intervalHours: 24,
+    active: { context, experience },
+    palaceRecords: records.map((record) => ({
+      id: record.id,
+      kind: record.kind,
+      content: clampText(record.content, 700),
+      summary: record.summary,
+      source: record.source,
+      tags: record.tags,
+      metadata: record.metadata,
+      updatedAt: record.updatedAt,
+    })),
+    instructions: [
+      "Use the host LLM to lightly deduplicate, decay stale details, and correct active memory against durable palace records.",
+      "Keep activeContext compact and current; keep activeExperience as reusable lessons only.",
+      "Return memory_maintenance.apply with activeContext, activeExperience, and a short governanceReport.",
+    ],
+  };
+}
+
+function isMaintenanceDue(metadataList: Array<unknown>, nowIso: string): boolean {
+  const now = Date.parse(nowIso);
+  const lastDeepAt = metadataList
+    .map((metadata) => optionalString(asRecord(metadata)?.lastDeepGovernedAt))
+    .map((value) => value ? Date.parse(value) : Number.NaN)
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => right - left)[0];
+  return lastDeepAt === undefined || now - lastDeepAt >= MAINTENANCE_INTERVAL_MS;
+}
 
 async function findSessionMemoryRecord(
   memory: MarvMem,

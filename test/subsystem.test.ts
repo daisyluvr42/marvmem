@@ -184,3 +184,56 @@ test("session memory adapter defers active context distillation until flush", as
   assert.ok(taskState?.rollingSummary);
   assert.match(taskState!.rollingSummary!, /Task summary:/);
 });
+
+test("session memory adapter runs inferencer-backed maintenance only after 24 hours", async () => {
+  let now = new Date("2026-06-01T00:00:00.000Z");
+  const calls: string[] = [];
+  const memory = createMarvMem({
+    store: new InMemoryStore(),
+    now: () => now,
+    inferencer: async ({ kind, prompt }) => {
+      calls.push(kind);
+      if (kind === "context") {
+        return { ok: true, text: `Context summary: ${prompt.slice(0, 40)}` };
+      }
+      if (kind === "task_summary") {
+        return { ok: true, text: `Task summary: ${prompt.slice(0, 40)}` };
+      }
+      if (kind === "experience" || kind === "calibration") {
+        return { ok: true, text: "Keep QA signoff in release reviews." };
+      }
+      return { ok: true, text: "ok" };
+    },
+  });
+  const scope = { type: "agent" as const, id: "openclaw" };
+  const adapter = createSessionMemoryAdapter({
+    memory,
+    defaultScopes: [scope],
+  });
+
+  await adapter.afterTurn({
+    userMessage: "Remember that release reviews need QA signoff.",
+    assistantMessage: "I will keep QA signoff in release reviews.",
+  });
+  await adapter.flushSession();
+
+  const experience = await memory.active.read("experience", scope);
+  assert.equal(experience?.content, "Keep QA signoff in release reviews.");
+  assert.equal(experience?.metadata?.lastDeepGovernedAt, "2026-06-01T00:00:00.000Z");
+  assert.equal(calls.filter((kind) => kind === "calibration").length, 1);
+
+  await adapter.afterTurn({
+    userMessage: "No new maintenance should be needed yet.",
+    assistantMessage: "Noted.",
+  });
+  await adapter.flushSession();
+  assert.equal(calls.filter((kind) => kind === "calibration").length, 1);
+
+  now = new Date("2026-06-02T01:00:00.000Z");
+  await adapter.afterTurn({
+    userMessage: "The next release review is starting.",
+    assistantMessage: "I will keep the same review lesson active.",
+  });
+  await adapter.flushSession();
+  assert.equal(calls.filter((kind) => kind === "calibration").length, 2);
+});

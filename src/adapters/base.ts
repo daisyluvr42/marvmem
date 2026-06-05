@@ -187,6 +187,7 @@ export function createSessionMemoryAdapter(params: {
             scope: buffer.scope,
             sessionSummary,
           });
+          await params.memory.maintenance.deepConsolidateIfDue({ scope: buffer.scope });
         }
         if (buffer.lastTaskId) {
           await params.memory.task.distillRollingSummary({

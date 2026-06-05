@@ -434,6 +434,9 @@ test("memory_session stores host-distilled session state without calling an infe
   assert.equal(first.sessionRecord?.metadata?.messageCount, 2);
   assert.equal(first.sessionRecord?.metadata?.commitSource, "host");
   assert.equal(first.durableRecords?.length, 1);
+  assert.equal(first.active?.context?.content, "Host summary: importer now commits session summaries.");
+  assert.equal(first.active?.context?.metadata?.lastGovernedBy, "codex");
+  assert.equal(first.maintenanceRequest?.kind, "active_memory_maintenance");
 
   const state = await memory.task.getRollingSummary("codex:session-commit-1");
   assert.equal(state?.rollingSummary, "Host summary: importer now commits session summaries.");
@@ -492,6 +495,96 @@ test("memory_session stores host-distilled session state without calling an infe
   const projectRecords = await memory.list({ scopes: [{ type: "project", id: "marvmem" }] });
   assert.equal(projectRecords.length, 1);
   assert.equal(projectRecords[0]?.metadata?.origin, "host_session_commit");
+});
+
+test("memory_session active governance can be deep-maintained by the host", async () => {
+  const memory = createMarvMem({ store: new InMemoryStore() });
+  const handler = createMemoryMcpHandler({ memory });
+
+  const commitResult = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: "memory_session",
+      arguments: {
+        action: "commit",
+        agent: "workbuddy",
+        sessionId: "governance-1",
+        rollingSummary: "The session discussed active memory governance.",
+        activeContext: "Current context after host light governance.",
+        activeExperience: "Reusable lesson after host light governance.",
+        governanceReport: { removedDuplicates: 1 },
+        scopeType: "agent",
+        scopeId: "workbuddy",
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+
+  const commit = JSON.parse(commitResult.result?.content?.[0]?.text ?? "{}");
+  assert.equal(commit.active?.context?.content, "Current context after host light governance.");
+  assert.equal(commit.active?.experience?.content, "Reusable lesson after host light governance.");
+  assert.equal(commit.active?.experience?.metadata?.governanceReport?.removedDuplicates, 1);
+  assert.equal(commit.maintenanceRequest?.kind, "active_memory_maintenance");
+  assert.ok(commit.maintenanceRequest?.palaceRecords?.length >= 1);
+
+  const prepareResult = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/call",
+    params: {
+      name: "memory_maintenance",
+      arguments: {
+        action: "prepare",
+        scopeType: "agent",
+        scopeId: "workbuddy",
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+  const prepared = JSON.parse(prepareResult.result?.content?.[0]?.text ?? "{}");
+  assert.equal(prepared.request?.active?.context?.content, "Current context after host light governance.");
+
+  const applyResult = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 3,
+    method: "tools/call",
+    params: {
+      name: "memory_maintenance",
+      arguments: {
+        action: "apply",
+        agent: "workbuddy",
+        activeContext: "Deep-governed active context.",
+        activeExperience: "Deep-governed active experience.",
+        governanceReport: { correctedAgainstPalace: true },
+        scopeType: "agent",
+        scopeId: "workbuddy",
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+  const applied = JSON.parse(applyResult.result?.content?.[0]?.text ?? "{}");
+  assert.equal(applied.context?.content, "Deep-governed active context.");
+  assert.equal(applied.experience?.metadata?.lastGovernedBy, "workbuddy");
+  assert.ok(applied.experience?.metadata?.lastDeepGovernedAt);
+
+  const secondCommit = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 4,
+    method: "tools/call",
+    params: {
+      name: "memory_session",
+      arguments: {
+        action: "commit",
+        agent: "workbuddy",
+        sessionId: "governance-1",
+        rollingSummary: "A later session commit still refreshes active context.",
+        activeContext: "Fresh light-governed active context.",
+        scopeType: "agent",
+        scopeId: "workbuddy",
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+  const second = JSON.parse(secondCommit.result?.content?.[0]?.text ?? "{}");
+  assert.equal(second.maintenanceRequest, undefined);
 });
 
 test("memory_context respects maxChars through MCP", async () => {
