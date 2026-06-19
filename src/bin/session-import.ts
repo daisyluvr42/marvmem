@@ -3,7 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMarvMem, type MarvMem } from "../core/index.js";
-import type { MemoryRecord, MemoryScope, MemoryScopeType } from "../core/types.js";
+import { parseMemoryScopeType, type MemoryRecord, type MemoryScope } from "../core/types.js";
 
 export type SessionImportOptions = {
   sessionsRoot: string;
@@ -191,7 +191,7 @@ export function parseImportOptions(input: {
     sessionsRoot,
     storagePath,
     scope: {
-      type: scopeType as MemoryScopeType,
+      type: parseMemoryScopeType(scopeType),
       id: scopeId,
     },
   };

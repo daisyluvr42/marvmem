@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createMarvMem } from "../core/index.js";
-import type { MemoryScope } from "../core/types.js";
+import { parseMemoryScopeType, type MemoryScope } from "../core/types.js";
 import {
   applyHermesMemoryWrite,
   createHermesAgentMemoryAdapter,
@@ -256,7 +256,7 @@ function parseCli(argv: string[], env: NodeJS.ProcessEnv): CliOptions {
     oldText,
     recentMessages,
     scope: {
-      type: scopeType as MemoryScope["type"],
+      type: parseMemoryScopeType(scopeType),
       id: scopeId,
     },
     sessionId,

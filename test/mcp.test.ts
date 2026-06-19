@@ -270,6 +270,48 @@ test("MCP update and delete stay within the configured default scope", async () 
   assert.equal(updated.record.content, "Updated by WorkBuddy.");
 });
 
+test("MCP rejects unsupported scopeType but allows custom agent scopeId", async () => {
+  const memory = createMarvMem({ store: new InMemoryStore() });
+  const handler = createMemoryMcpHandler({ memory });
+
+  const invalid = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: "memory_record",
+      arguments: {
+        action: "write",
+        content: "Custom agents should use the agent scope type.",
+        scopeType: "custom-agent",
+        scopeId: "default",
+      },
+    },
+  })) as { error?: { message?: string } };
+
+  assert.match(invalid.error?.message ?? "", /Unsupported scopeType: custom-agent/);
+  assert.match(invalid.error?.message ?? "", /For a new or custom agent/);
+
+  const valid = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/call",
+    params: {
+      name: "memory_record",
+      arguments: {
+        action: "write",
+        content: "Custom agent memory.",
+        scopeType: "agent",
+        scopeId: "custom-agent",
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+
+  const parsed = JSON.parse(valid.result?.content?.[0]?.text ?? "{}");
+  assert.equal(parsed.record?.scope?.type, "agent");
+  assert.equal(parsed.record?.scope?.id, "custom-agent");
+});
+
 test("memory_context exposes record markers through MCP", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
   const handler = createMemoryMcpHandler({ memory });

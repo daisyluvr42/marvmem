@@ -135,6 +135,9 @@ RAW_JSON_END -->
     assert.match(memoryProjection, /Existing WorkBuddy memory/);
     assert.equal(memoryProjection.match(/marvmem-agent-instructions:start/g)?.length, 1);
     assert.match(memoryProjection, /memory_context/);
+    assert.match(memoryProjection, /Internal recall requirement/);
+    assert.match(memoryProjection, /Do this silently/);
+    assert.doesNotMatch(memoryProjection, /Trigger words include/);
     assert.match(memoryProjection, /memory_session/);
     assert.match(memoryProjection, /agent:workbuddy/);
     assert.match(memoryProjection, /update workbuddy/);

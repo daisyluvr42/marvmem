@@ -65,6 +65,24 @@ test("Claude import CLI stores Claude Code JSONL sessions", async () => {
   }
 });
 
+test("session import CLI rejects unsupported scope type with custom agent guidance", async () => {
+  const root = await mkdtemp(join(tmpdir(), "marvmem-import-scope-"));
+  try {
+    await assert.rejects(
+      runImporter(
+        "src/bin/marvmem-claude-import.ts",
+        join(root, "sessions"),
+        join(root, "memory.sqlite"),
+        "default",
+        "custom-agent",
+      ),
+      /For a new or custom agent/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Copilot import CLI stores VS Code chat session JSON", async () => {
   const root = await mkdtemp(join(tmpdir(), "marvmem-copilot-import-"));
   const sessionsRoot = join(root, "Code", "User");
@@ -200,7 +218,13 @@ function jsonl(value: unknown): string {
   return JSON.stringify(value);
 }
 
-async function runImporter(script: string, sessionsRoot: string, storagePath: string, scopeId: string): Promise<void> {
+async function runImporter(
+  script: string,
+  sessionsRoot: string,
+  storagePath: string,
+  scopeId: string,
+  scopeType = "agent",
+): Promise<void> {
   await execFileAsync(process.execPath, [
     "--import",
     "tsx",
@@ -209,7 +233,7 @@ async function runImporter(script: string, sessionsRoot: string, storagePath: st
     "--storage-path",
     storagePath,
     "--scope-type",
-    "agent",
+    scopeType,
     "--scope-id",
     scopeId,
   ]);

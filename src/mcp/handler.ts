@@ -1,5 +1,10 @@
 import type { MarvMem } from "../core/memory.js";
-import type { MemoryRecord, MemoryScope } from "../core/types.js";
+import {
+  MEMORY_SCOPE_TYPES,
+  parseMemoryScopeType,
+  type MemoryRecord,
+  type MemoryScope,
+} from "../core/types.js";
 import { createMemoryRuntime, type MemoryRuntime } from "../runtime/index.js";
 
 type JsonRpcId = string | number | null;
@@ -7,6 +12,7 @@ const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2024-11-05"] as const;
 const MAINTENANCE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const ACTIVE_CONTEXT_MAX_CHARS = 400;
 const ACTIVE_EXPERIENCE_MAX_CHARS = 800;
+const SCOPE_TYPE_SCHEMA = { type: "string", enum: [...MEMORY_SCOPE_TYPES] };
 const SERVER_INSTRUCTIONS =
   "Use memory_context with action='recall' and no scopeType/scopeId when continuity or prior decisions matter, so MarvMem can search shared memory across agents. " +
   "Use memory_record with action='write' for durable user preferences, facts, or explicit remember requests. " +
@@ -45,7 +51,7 @@ export function createMemoryToolSet(params: {
           action: { type: "string", enum: ["search", "get", "list", "write", "update", "delete"] },
           id: { type: "string" },
           query: { type: "string" },
-          scopeType: { type: "string" },
+          scopeType: SCOPE_TYPE_SCHEMA,
           scopeId: { type: "string" },
           content: { type: "string" },
           kind: { type: "string" },
@@ -144,7 +150,7 @@ export function createMemoryToolSet(params: {
           message: { type: "string" },
           query: { type: "string" },
           recentMessages: { type: "array", items: { type: "string" } },
-          scopeType: { type: "string" },
+          scopeType: SCOPE_TYPE_SCHEMA,
           scopeId: { type: "string" },
           maxResults: { type: "number" },
           minScore: { type: "number" },
@@ -186,7 +192,7 @@ export function createMemoryToolSet(params: {
           action: { type: "string", enum: ["get", "distill"] },
           kind: { type: "string" },
           content: { type: "string" },
-          scopeType: { type: "string" },
+          scopeType: SCOPE_TYPE_SCHEMA,
           scopeId: { type: "string" },
           maxChars: { type: "number" },
         },
@@ -248,7 +254,7 @@ export function createMemoryToolSet(params: {
           activeContext: { type: "string" },
           activeExperience: { type: "string" },
           governanceReport: { type: "object", additionalProperties: true },
-          scopeType: { type: "string" },
+          scopeType: SCOPE_TYPE_SCHEMA,
           scopeId: { type: "string" },
           entries: {
             type: "array",
@@ -274,7 +280,7 @@ export function createMemoryToolSet(params: {
                 content: { type: "string" },
                 kind: { type: "string" },
                 summary: { type: "string" },
-                scopeType: { type: "string" },
+                scopeType: SCOPE_TYPE_SCHEMA,
                 scopeId: { type: "string" },
                 confidence: { type: "number" },
                 importance: { type: "number" },
@@ -469,7 +475,7 @@ export function createMemoryToolSet(params: {
           message: { type: "string" },
           toolContext: { type: "string" },
           maxChars: { type: "number" },
-          scopeType: { type: "string" },
+          scopeType: SCOPE_TYPE_SCHEMA,
           scopeId: { type: "string" },
         },
         required: ["action", "taskId"],
@@ -518,7 +524,7 @@ export function createMemoryToolSet(params: {
         properties: {
           action: { type: "string", enum: ["prepare", "apply", "calibrate", "rebuild"] },
           agent: { type: "string" },
-          scopeType: { type: "string" },
+          scopeType: SCOPE_TYPE_SCHEMA,
           scopeId: { type: "string" },
           maxChars: { type: "number" },
           activeContext: { type: "string" },
@@ -924,7 +930,10 @@ function parseDurableMemories(value: unknown): SessionCommitDurableMemory[] {
     const scopeId = optionalString(record.scopeId);
     const scope = scopeType || scopeId
       ? {
-          type: expectString(record.scopeType, `durableMemories[${index}].scopeType`) as MemoryScope["type"],
+          type: parseMemoryScopeType(
+            expectString(record.scopeType, `durableMemories[${index}].scopeType`),
+            `durableMemories[${index}].scopeType`,
+          ),
           id: expectString(record.scopeId, `durableMemories[${index}].scopeId`),
         }
       : undefined;
@@ -1004,10 +1013,13 @@ function parseScopeArgs(
 function parseReadScopeArgs(args: Record<string, unknown>): MemoryScope[] | undefined {
   const scopeType = optionalString(args.scopeType);
   const scopeId = optionalString(args.scopeId);
-  if (scopeType && scopeId) {
-    return [{ type: scopeType as MemoryScope["type"], id: scopeId }];
+  if (!scopeType && !scopeId) {
+    return undefined;
   }
-  return undefined;
+  if (!scopeType || !scopeId) {
+    throw new Error("scopeType and scopeId must be provided together");
+  }
+  return [{ type: parseMemoryScopeType(scopeType), id: scopeId }];
 }
 
 function sameScope(left: MemoryScope, right: MemoryScope): boolean {

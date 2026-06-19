@@ -193,6 +193,9 @@ RAW_JSON_END -->
     assert.doesNotMatch(nextMemory, /Native session detail should be searchable/);
     assert.equal(nextMemory.match(/marvmem-agent-instructions:start/g)?.length, 1);
     assert.match(nextMemory, /memory_context/);
+    assert.match(nextMemory, /Internal recall requirement/);
+    assert.match(nextMemory, /Do this silently/);
+    assert.doesNotMatch(nextMemory, /Trigger words include/);
 
     const records = await memory.list({ scopes: [{ type: "agent", id: "workbuddy-test" }] });
     assert.equal(records.some((record) => record.content.includes("MarvMem memory workflow")), false);

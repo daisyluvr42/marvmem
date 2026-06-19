@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import type { MemoryScope } from "../core/types.js";
+import { parseMemoryScopeType, type MemoryScope } from "../core/types.js";
 import { defaultMemoryMcpStoragePath, runMemoryMcpStdioServer } from "../mcp/stdio.js";
 import { createMarvMem, type MarvMemOptions } from "../core/memory.js";
 import { createWorkBuddyMemoryAdapter } from "../adapters/workbuddy.js";
@@ -131,7 +131,7 @@ function parseCliConfig(argv: string[], env: NodeJS.ProcessEnv): CliConfig {
     throw new Error("Default scope requires both --scope-type and --scope-id");
   }
 
-  const defaultScopes = scopeType && scopeId ? [{ type: scopeType as MemoryScope["type"], id: scopeId }] : undefined;
+  const defaultScopes = scopeType && scopeId ? [{ type: parseMemoryScopeType(scopeType), id: scopeId }] : undefined;
   const retrieval = buildRetrievalConfig({
     retrievalBackend,
     embeddingsProvider,

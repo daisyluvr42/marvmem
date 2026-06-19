@@ -1,4 +1,6 @@
-export type MemoryScopeType = "agent" | "session" | "user" | "task" | "document" | "project" | "repo";
+export const MEMORY_SCOPE_TYPES = ["agent", "session", "user", "task", "document", "project", "repo"] as const;
+
+export type MemoryScopeType = (typeof MEMORY_SCOPE_TYPES)[number];
 
 export type MemoryScope = {
   type: MemoryScopeType;
@@ -118,6 +120,16 @@ export function normalizeScope(scope: MemoryScope): MemoryScope {
     id: scope.id.trim(),
     weight: scope.weight,
   };
+}
+
+export function parseMemoryScopeType(value: string, label = "scopeType"): MemoryScopeType {
+  if ((MEMORY_SCOPE_TYPES as readonly string[]).includes(value)) {
+    return value as MemoryScopeType;
+  }
+  throw new Error(
+    `Unsupported ${label}: ${value}. Use one of: ${MEMORY_SCOPE_TYPES.join(", ")}. ` +
+      `For a new or custom agent, use scopeType "agent" and put the agent name in scopeId.`,
+  );
 }
 
 export function scopeKey(scope: MemoryScope): string {
