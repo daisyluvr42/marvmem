@@ -15,6 +15,7 @@ import {
   installHermesAgentMemoryTakeover,
   installOpenClawMemoryTakeover,
   installWorkBuddyMemoryTakeover,
+  writeWorkBuddyInstructions,
 } from "../src/adapters/index.js";
 import { createMarvMem, InMemoryStore } from "../src/core/index.js";
 
@@ -128,12 +129,28 @@ test("WorkBuddy takeover imports SOUL, USER, and MEMORY projections without losi
   const soulPath = join(workbuddyHome, "SOUL.md");
   const userPath = join(workbuddyHome, "USER.md");
   const memoryPath = join(workbuddyHome, "MEMORY.md");
+  const nativeMemoryDir = join(workbuddyHome, "memory");
 
   try {
-    await mkdir(workbuddyHome, { recursive: true });
+    await mkdir(nativeMemoryDir, { recursive: true });
     await writeFile(soulPath, "- You are a calm work assistant.\n", "utf8");
     await writeFile(userPath, "- Prefers concise Chinese replies.\n", "utf8");
     await writeFile(memoryPath, "- Use pnpm workspaces.\n", "utf8");
+    await writeFile(
+      join(nativeMemoryDir, "user-1_memory.md"),
+      `# User Memory Profile
+
+<!-- RAW_JSON_START
+{
+  "uid": "user-1",
+  "memoryBlock": "Native session detail should be searchable in MarvMem.",
+  "version": 7,
+  "updatedAt": "2026-06-19T00:00:00+08:00"
+}
+RAW_JSON_END -->
+`,
+      "utf8",
+    );
 
     const memory = createMarvMem({
       store: new InMemoryStore(),
@@ -149,8 +166,11 @@ test("WorkBuddy takeover imports SOUL, USER, and MEMORY projections without losi
     assert.equal(imported.soulEntries, 1);
     assert.equal(imported.userEntries, 1);
     assert.equal(imported.memoryEntries, 1);
+    assert.equal(imported.nativeMemoryEntries, 1);
 
+    assert.equal(await writeWorkBuddyInstructions(memoryPath), true);
     await writeFile(memoryPath, "- Use pnpm workspaces.\n- Manual edits should survive takeover.\n", "utf8");
+    assert.equal(await writeWorkBuddyInstructions(memoryPath), true);
     await memory.remember({
       scope: { type: "agent", id: "workbuddy-test" },
       kind: "preference",
@@ -169,6 +189,14 @@ test("WorkBuddy takeover imports SOUL, USER, and MEMORY projections without losi
     assert.match(nextUser, /numbered lists/);
     assert.match(nextMemory, /Use pnpm workspaces/);
     assert.match(nextMemory, /Manual edits should survive takeover/);
+    assert.match(nextMemory, /WorkBuddy native memory profile v7/);
+    assert.doesNotMatch(nextMemory, /Native session detail should be searchable/);
+    assert.equal(nextMemory.match(/marvmem-agent-instructions:start/g)?.length, 1);
+    assert.match(nextMemory, /memory_context/);
+
+    const records = await memory.list({ scopes: [{ type: "agent", id: "workbuddy-test" }] });
+    assert.equal(records.some((record) => record.content.includes("MarvMem memory workflow")), false);
+    assert.equal(records.some((record) => record.content.includes("Native session detail should be searchable")), true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

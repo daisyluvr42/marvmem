@@ -208,6 +208,7 @@ test("MCP read tools with a default write scope still search shared memory", asy
   const recall = JSON.parse(recallResult.result?.content?.[0]?.text ?? "{}");
   assert.equal(recall.hits?.[0]?.record.scope.id, "codex");
   assert.match(recall.injectedContext, /AI application optionality/);
+  assert.equal(recall.hits?.[0]?.record.content, undefined);
 });
 
 test("MCP update and delete stay within the configured default scope", async () => {

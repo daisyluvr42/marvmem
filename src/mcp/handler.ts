@@ -662,11 +662,12 @@ export function createMemoryMcpHandler(params: {
           if (tool.mutatesMemory) {
             await params.onMemoryChanged?.();
           }
+          const output = compactToolResult(name, result);
           return rpcResult(id, {
             content: [
               {
                 type: "text",
-                text: JSON.stringify(result, null, 2),
+                text: JSON.stringify(output, null, 2),
               },
             ],
             isError: false,
@@ -679,6 +680,86 @@ export function createMemoryMcpHandler(params: {
       return rpcError(id, -32601, `Unknown method: ${method}`);
     },
   };
+}
+
+function compactToolResult(name: string, result: unknown): unknown {
+  if (name !== "memory_context") {
+    return result;
+  }
+  const recall = asRecord(result);
+  if (!recall) {
+    return result;
+  }
+  return compactRecord({
+    ...recall,
+    hits: Array.isArray(recall.hits)
+      ? recall.hits.map((hit) => compactSearchHit(hit))
+      : undefined,
+    evidence: Array.isArray(recall.evidence)
+      ? recall.evidence.map((evidence) => compactEvidence(evidence))
+      : undefined,
+  });
+}
+
+function compactSearchHit(value: unknown): unknown {
+  const hit = asRecord(value);
+  if (!hit) {
+    return value;
+  }
+  const record = asRecord(hit.record);
+  return compactRecord({
+    ...hit,
+    record: record
+      ? compactRecord({
+          id: record.id,
+          scope: record.scope,
+          kind: record.kind,
+          summary: record.summary,
+          source: record.source,
+          tags: record.tags,
+          metadata: compactMetadata(record.metadata),
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+        })
+      : undefined,
+    evidence: Array.isArray(hit.evidence)
+      ? hit.evidence.map((evidence) => compactEvidence(evidence))
+      : compactEvidence(hit.evidence),
+  });
+}
+
+function compactEvidence(value: unknown): unknown {
+  const evidence = asRecord(value);
+  if (!evidence) {
+    return value;
+  }
+  return compactRecord({
+    ...evidence,
+    metadata: compactMetadata(evidence.metadata),
+  });
+}
+
+function compactMetadata(value: unknown): unknown {
+  if (value === undefined) {
+    return undefined;
+  }
+  const json = JSON.stringify(value);
+  if (json.length <= 1_000) {
+    return value;
+  }
+  const metadata = asRecord(value);
+  if (!metadata) {
+    return { truncated: true };
+  }
+  return compactRecord({
+    sessionId: metadata.sessionId,
+    taskId: metadata.taskId,
+    cwd: metadata.cwd,
+    timestamp: metadata.timestamp,
+    lastImportedAt: metadata.lastImportedAt,
+    lastCommittedAt: metadata.lastCommittedAt,
+    truncated: true,
+  });
 }
 
 type SessionCommitEntry = {

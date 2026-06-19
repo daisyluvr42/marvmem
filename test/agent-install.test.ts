@@ -72,6 +72,12 @@ test("agent installer writes Cursor, Copilot, Antigravity, and Trae MCP configs 
     const antigravityRules = await readFile(join(root, ".gemini", "GEMINI.md"), "utf8");
     assert.match(antigravityRules, /agent:antigravity/);
     assert.match(antigravityRules, /memory_session/);
+    const antigravityMcpInstructions = await readFile(
+      join(root, ".gemini", "antigravity", "mcp", "marvmem", "instructions.md"),
+      "utf8",
+    );
+    assert.match(antigravityMcpInstructions, /memory_context/);
+    assert.match(antigravityMcpInstructions, /memory_session/);
 
     const traeSkill = await readFile(join(root, ".trae", "skills", "marvmem-memory", "SKILL.md"), "utf8");
     assert.match(traeSkill, /name: marvmem-memory/);
@@ -88,18 +94,34 @@ test("agent installer writes WorkBuddy MCP config with a default scope", async (
   const mcpPath = join(root, "marvmem-mcp.js");
 
   try {
-    await mkdir(join(root, ".workbuddy"), { recursive: true });
+    await mkdir(join(root, ".workbuddy", "memory"), { recursive: true });
     await writeFile(join(root, ".workbuddy", "SOUL.md"), "- WorkBuddy speaks calmly.\n", "utf8");
     await writeFile(join(root, ".workbuddy", "USER.md"), "- Prefers direct answers.\n", "utf8");
     await writeFile(join(root, ".workbuddy", "MEMORY.md"), "- Existing WorkBuddy memory.\n", "utf8");
+    await writeFile(
+      join(root, ".workbuddy", "memory", "user-1_memory.md"),
+      `# User Memory Profile
+
+<!-- RAW_JSON_START
+{
+  "uid": "user-1",
+  "memoryBlock": "Existing native WorkBuddy session memory.",
+  "version": 2,
+  "updatedAt": "2026-06-19T00:00:00+08:00"
+}
+RAW_JSON_END -->
+`,
+      "utf8",
+    );
 
     const output = await runInstaller("workbuddy", root, storagePath, mcpPath);
     const parsed = JSON.parse(output);
     assert.equal(parsed.results[0].agent, "workbuddy");
     assert.equal(parsed.results[0].mcp, "installed");
     assert.equal(parsed.results[0].import, "imported");
-    assert.equal(parsed.results[0].instructions, "skipped");
-    assert.equal(parsed.results[0].importSummary.imported, 3);
+    assert.equal(parsed.results[0].instructions, "updated");
+    assert.equal(parsed.results[0].importSummary.imported, 4);
+    assert.equal(parsed.results[0].importSummary.nativeMemoryEntries, 1);
 
     const config = JSON.parse(await readFile(join(root, ".workbuddy", "mcp.json"), "utf8"));
     assert.equal(config.mcpServers.marvmem.command, "node");
@@ -111,6 +133,12 @@ test("agent installer writes WorkBuddy MCP config with a default scope", async (
 
     const memoryProjection = await readFile(join(root, ".workbuddy", "MEMORY.md"), "utf8");
     assert.match(memoryProjection, /Existing WorkBuddy memory/);
+    assert.equal(memoryProjection.match(/marvmem-agent-instructions:start/g)?.length, 1);
+    assert.match(memoryProjection, /memory_context/);
+    assert.match(memoryProjection, /memory_session/);
+    assert.match(memoryProjection, /agent:workbuddy/);
+    assert.match(memoryProjection, /update workbuddy/);
+    assert.match(memoryProjection, /WorkBuddy native memory profile v2/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

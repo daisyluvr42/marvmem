@@ -6,7 +6,7 @@ import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultMemoryMcpStoragePath } from "../mcp/stdio.js";
 import { createMarvMem } from "../core/memory.js";
-import { installWorkBuddyMemoryTakeover } from "../adapters/workbuddy.js";
+import { installWorkBuddyMemoryTakeover, writeWorkBuddyInstructions } from "../adapters/workbuddy.js";
 import { openSqliteDatabase } from "../system/sqlite.js";
 
 export const AGENT_IDS = ["codex", "claude", "cursor", "copilot", "antigravity", "workbuddy", "trae"] as const;
@@ -127,6 +127,7 @@ export const AGENTS: Record<AgentId, AgentDefinition> = {
     scopeId: "workbuddy",
     defaultSessionsRoot: (home) => join(home, ".workbuddy"),
     configPath: (home) => join(home, ".workbuddy", "mcp.json"),
+    instructionsPath: (home) => join(home, ".workbuddy", "MEMORY.md"),
   },
   trae: {
     label: "Trae Solo",
@@ -238,6 +239,17 @@ export async function installInstructions(
   if (agent === "trae") {
     return await writeTraeSkill(path, instructionBlock(agent));
   }
+  if (agent === "antigravity") {
+    const changedGemini = await writeMarkedBlock(path, instructionBlock(agent));
+    const changedMcp = await writeTextIfChanged(
+      antigravityMcpInstructionsPath(options.home),
+      `${mcpInstructionText()}\n`,
+    );
+    return changedGemini || changedMcp;
+  }
+  if (agent === "workbuddy") {
+    return await writeWorkBuddyInstructions(path, workBuddyUpdateCommand());
+  }
   return await writeMarkedBlock(path, instructionBlock(agent));
 }
 
@@ -256,7 +268,11 @@ export async function getAgentStatus(
   const sessionsRoot = options.sessionsRoot ?? config.defaultSessionsRoot(options.home);
   const instructionsPath = config.instructionsPath?.(options.home);
   const mcp = await inspectMcpConfig(agent, options);
-  const installedInstructions = instructionsPath ? await textIncludes(instructionsPath, "marvmem-agent-instructions:start") : false;
+  const installedInstructions = agent === "antigravity"
+    ? await antigravityInstructionsInstalled(options.home)
+    : instructionsPath
+      ? await textIncludes(instructionsPath, "marvmem-agent-instructions:start")
+      : false;
 
   return {
     agent,
@@ -360,9 +376,17 @@ async function countImported(agent: AgentId, storagePath: string): Promise<Agent
 
   const db = openSqliteDatabase(storagePath);
   try {
-    const memories =
-      (db.prepare("SELECT COUNT(*) AS count FROM memory_items WHERE source = ?").get(source) as { count?: number } | undefined)
-        ?.count ?? 0;
+    const memories = agent === "workbuddy"
+      ? (
+          db.prepare(
+            "SELECT COUNT(*) AS count FROM memory_items WHERE source IN ('workbuddy_import', 'workbuddy_native_import')",
+          ).get() as { count?: number } | undefined
+        )?.count ?? 0
+      : (
+          db.prepare("SELECT COUNT(*) AS count FROM memory_items WHERE source = ?").get(source) as
+            | { count?: number }
+            | undefined
+        )?.count ?? 0;
     const tasks =
       (
         db.prepare("SELECT COUNT(*) AS count FROM task_context WHERE task_id LIKE ?").get(`${agent}:%`) as
@@ -454,6 +478,10 @@ async function installWorkBuddyTakeover(options: ResolvedAgentInstallOptions): P
   return imported;
 }
 
+function workBuddyUpdateCommand(): string {
+  return `node ${shellQuote(agentBinPath("marvmem-agent"))} update workbuddy`;
+}
+
 function instructionBlock(agent: AgentId): string {
   const scopeId = AGENTS[agent].scopeId;
   return `<!-- marvmem-agent-instructions:start -->
@@ -462,6 +490,27 @@ Memory lookup:
 - If a task may depend on user-specific preferences, prior project decisions, repo conventions, or earlier troubleshooting history, query MarvMem before answering or editing. Prefer a lightweight \`memory_context\` call with \`action: "recall"\` using the current request. For cross-agent continuity, omit scope first so MarvMem can search the shared user memory store; for narrow lookups or durable writes, use \`agent:${scopeId}\`. Skip this for trivial, fully self-contained requests.
 - After substantial work or when closing a session, distill the session with the current host model and call \`memory_session\` with \`action: "commit"\`, the rolling summary, any new transcript entries, and durable facts/preferences/decisions. Use \`agent:${scopeId}\` for the session memory unless a narrower project/repo scope is clearly available.
 <!-- marvmem-agent-instructions:end -->`;
+}
+
+function mcpInstructionText(): string {
+  return [
+    "Use memory_context with action='recall' and no scopeType/scopeId when continuity or prior decisions matter, so MarvMem can search shared memory across agents.",
+    "Use memory_record with action='write' for durable user preferences, facts, or explicit remember requests.",
+    "Use memory_session with action='commit' when the host agent has already distilled a session; include activeContext/activeExperience when available, and follow maintenanceRequest if returned.",
+    "Use memory_task with action='append' or action='window' for longer task-focused work.",
+  ].join(" ");
+}
+
+function antigravityMcpInstructionsPath(home: string): string {
+  return join(home, ".gemini", "antigravity", "mcp", "marvmem", "instructions.md");
+}
+
+async function antigravityInstructionsInstalled(home: string): Promise<boolean> {
+  return (
+    await textIncludes(AGENTS.antigravity.instructionsPath!(home), "marvmem-agent-instructions:start")
+  ) || (
+    await textIncludes(antigravityMcpInstructionsPath(home), "memory_context")
+  );
 }
 
 async function writeCursorRule(path: string, block: string): Promise<boolean> {
@@ -540,6 +589,14 @@ async function writeText(path: string, content: string): Promise<void> {
   await writeFile(path, content, "utf8");
 }
 
+async function writeTextIfChanged(path: string, content: string): Promise<boolean> {
+  if (await readText(path) === content) {
+    return false;
+  }
+  await writeText(path, content);
+  return true;
+}
+
 async function readJsonObject(path: string): Promise<Record<string, unknown>> {
   const text = await readText(path);
   if (!text.trim()) {
@@ -588,6 +645,10 @@ function removeTomlTable(content: string, tableName: string): string {
 
 function escapeToml(value: string): string {
   return value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"");
+}
+
+function shellQuote(value: string): string {
+  return /^[A-Za-z0-9_/:=.,+-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 async function textIncludes(path: string, needle: string): Promise<boolean> {
