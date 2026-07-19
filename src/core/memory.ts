@@ -14,6 +14,7 @@ import { InMemoryStore, SqliteMemoryStore } from "./storage.js";
 import {
   normalizeScope,
   scopeKey,
+  type MemoryGetOptions,
   type MemoryInput,
   type MemoryEvidenceRef,
   type MemoryListOptions,
@@ -44,6 +45,9 @@ const DEFAULT_SEARCH_WEIGHTS: SearchWeights = {
 };
 
 const ENTITY_MATCH_BOOST = 0.18;
+const MAX_SESSION_METADATA_BYTES = 8_192;
+const MAX_MARKER_HISTORY_ITEMS = 8;
+const MAX_MARKER_METADATA_BYTES = 512;
 
 export type MarvMemOptions = {
   storage?: {
@@ -174,29 +178,64 @@ export class MarvMem {
     });
   }
 
-  async remember(input: MemoryInput): Promise<MemoryRecord> {
+  async remember(input: MemoryInput, options: { dedupe?: boolean } = {}): Promise<MemoryRecord> {
     return this.enqueue(async () => {
       const nowIso = this.now().toISOString();
-      const records = await this.store.load();
+      const scope = normalizeScope(input.scope);
+      const sessionInput = isSessionMemoryInput(input);
+      const normalizedInput: MemoryInput = {
+        ...input,
+        scope,
+        metadata: sessionInput ? compactSessionMetadata(input.metadata) : input.metadata,
+      };
+
+      if (sessionInput) {
+        const sessionId = stringMetadata(normalizedInput.metadata, "sessionId");
+        const taskId = stringMetadata(normalizedInput.metadata, "taskId");
+        if (sessionId) {
+          const existing = this.store.findSessionRecord
+            ? await this.store.findSessionRecord(scope, sessionId, taskId)
+            : (await this.list({ scopes: [scope] })).find((record) =>
+                stringMetadata(record.metadata, "sessionId") === sessionId &&
+                (!taskId || stringMetadata(record.metadata, "taskId") === taskId),
+              ) ?? null;
+          if (existing) {
+            existing.content = normalizedInput.content.trim();
+            existing.summary = normalizedInput.summary?.trim() || summarizeContent(normalizedInput.content);
+            existing.confidence = clamp(Math.max(existing.confidence, normalizedInput.confidence ?? 0.7), 0.05, 1);
+            existing.importance = clamp(Math.max(existing.importance, normalizedInput.importance ?? 0.5), 0, 1);
+            applyIncomingMarkers(existing, normalizedInput);
+            existing.metadata = compactSessionMetadata(existing.metadata);
+            existing.updatedAt = nowIso;
+            await this.persistRecord(existing);
+            await this.syncDerivedState(existing);
+            return cloneRecord(existing);
+          }
+        }
+      }
 
       // --- Evaluate: use evaluator or fallback to threshold-based dedup ---
-      if (this.evaluator || this.dedupeThreshold < 1) {
+      if (options.dedupe !== false && !sessionInput && (this.evaluator || this.dedupeThreshold < 1)) {
         const inputText = buildSearchText({
-          kind: input.kind,
-          content: input.content,
-          summary: input.summary,
-          tags: input.tags ?? [],
-          scope: normalizeScope(input.scope),
+          kind: normalizedInput.kind,
+          content: normalizedInput.content,
+          summary: normalizedInput.summary,
+          tags: normalizedInput.tags ?? [],
+          scope,
         } as MemoryRecord);
         const inputVector = embedTextHash(inputText, this.embeddingDimensions);
         const inputTokens = uniqueTokens(inputText);
-        const scopeK = scopeKey(normalizeScope(input.scope));
+        const candidateRecords = this.store.findDedupeCandidates
+          ? await this.store.findDedupeCandidates(scope, normalizedInput.kind, 64)
+          : (await this.store.load()).filter((record) =>
+              isRecordVisible(record) &&
+              scopeKey(record.scope) === scopeKey(scope) &&
+              record.kind === normalizedInput.kind,
+            );
 
         // Collect candidates with similarity scores
         const candidates: Array<{ record: MemoryRecord; similarity: number }> = [];
-        for (const existing of records) {
-          if (scopeKey(existing.scope) !== scopeK) continue;
-          if (existing.kind !== input.kind) continue;
+        for (const existing of candidateRecords) {
           const existingText = buildSearchText(existing);
           const tokenScore = tokenOverlapScore(inputTokens, uniqueTokens(existingText));
           const hashScore = normalizeSimilarity(
@@ -216,7 +255,11 @@ export class MarvMem {
           if (this.evaluator) {
             // Use evaluator for intelligent conflict resolution
             const decision = await this.evaluator.evaluate({
-              incoming: { content: input.content, kind: input.kind, tags: input.tags ?? [] },
+              incoming: {
+                content: normalizedInput.content,
+                kind: normalizedInput.kind,
+                tags: normalizedInput.tags ?? [],
+              },
               candidates: candidates.map((c) => ({
                 id: c.record.id,
                 content: c.record.content,
@@ -226,43 +269,46 @@ export class MarvMem {
             });
 
             if (decision.action === "ignore") {
-              const best = candidates[0]!.record;
-              applyIncomingMarkers(best, input);
+              const best = await this.getStoredRecord(candidates[0]!.record.id);
+              if (!best) {
+                throw new Error("Memory candidate disappeared during evaluation");
+              }
+              applyIncomingMarkers(best, normalizedInput);
               best.updatedAt = nowIso;
-              await this.persistRecord(records, best);
+              await this.persistRecord(best);
               await this.syncDerivedState(best);
-              return { ...best, scope: { ...best.scope }, tags: [...best.tags] };
+              return cloneRecord(best);
             }
 
             if (decision.action === "update") {
-              const target = records.find((r) => r.id === decision.targetId);
+              const target = await this.getStoredRecord(decision.targetId);
               if (target) {
-                target.content = (decision.merged || input.content).trim();
+                target.content = (decision.merged || normalizedInput.content).trim();
                 target.summary = summarizeContent(target.content);
-                target.confidence = clamp(Math.max(target.confidence, input.confidence ?? 0.7), 0.05, 1);
-                target.importance = clamp(Math.max(target.importance, input.importance ?? 0.5), 0, 1);
-                applyIncomingMarkers(target, input);
+                target.confidence = clamp(Math.max(target.confidence, normalizedInput.confidence ?? 0.7), 0.05, 1);
+                target.importance = clamp(Math.max(target.importance, normalizedInput.importance ?? 0.5), 0, 1);
+                applyIncomingMarkers(target, normalizedInput);
                 target.updatedAt = nowIso;
-                await this.persistRecord(records, target);
+                await this.persistRecord(target);
                 await this.syncDerivedState(target);
-                return { ...target, scope: { ...target.scope }, tags: [...target.tags] };
+                return cloneRecord(target);
               }
             }
 
             if (decision.action === "contradict") {
-              const target = records.find((r) => r.id === decision.targetId);
+              const target = await this.getStoredRecord(decision.targetId);
               if (target) {
                 const previousContent = target.content;
-                target.content = (decision.resolution || input.content).trim();
+                target.content = (decision.resolution || normalizedInput.content).trim();
                 target.summary = summarizeContent(target.content);
-                target.confidence = clamp(input.confidence ?? 0.7, 0.05, 1);
-                target.importance = clamp(input.importance ?? 0.5, 0, 1);
+                target.confidence = clamp(normalizedInput.confidence ?? 0.7, 0.05, 1);
+                target.importance = clamp(normalizedInput.importance ?? 0.5, 0, 1);
                 target.metadata = { ...target.metadata, contradicted: true, previousContent };
-                applyIncomingMarkers(target, input);
+                applyIncomingMarkers(target, normalizedInput);
                 target.updatedAt = nowIso;
-                await this.persistRecord(records, target);
+                await this.persistRecord(target);
                 await this.syncDerivedState(target);
-                return { ...target, scope: { ...target.scope }, tags: [...target.tags] };
+                return cloneRecord(target);
               }
             }
             // action === "add" falls through to create new record below
@@ -270,16 +316,19 @@ export class MarvMem {
             // Legacy threshold-based dedup (no evaluator)
             const best = candidates[0]!;
             if (best.similarity >= this.dedupeThreshold) {
-              const existing = best.record;
-              existing.content = input.content.trim();
-              existing.summary = input.summary?.trim() || summarizeContent(input.content);
-              existing.confidence = clamp(Math.max(existing.confidence, input.confidence ?? 0.7), 0.05, 1);
-              existing.importance = clamp(Math.max(existing.importance, input.importance ?? 0.5), 0, 1);
-              applyIncomingMarkers(existing, input);
+              const existing = await this.getStoredRecord(best.record.id);
+              if (!existing) {
+                throw new Error("Memory candidate disappeared during deduplication");
+              }
+              existing.content = normalizedInput.content.trim();
+              existing.summary = normalizedInput.summary?.trim() || summarizeContent(normalizedInput.content);
+              existing.confidence = clamp(Math.max(existing.confidence, normalizedInput.confidence ?? 0.7), 0.05, 1);
+              existing.importance = clamp(Math.max(existing.importance, normalizedInput.importance ?? 0.5), 0, 1);
+              applyIncomingMarkers(existing, normalizedInput);
               existing.updatedAt = nowIso;
-              await this.persistRecord(records, existing);
+              await this.persistRecord(existing);
               await this.syncDerivedState(existing);
-              return { ...existing, scope: { ...existing.scope }, tags: [...existing.tags] };
+              return cloneRecord(existing);
             }
           }
         }
@@ -288,29 +337,27 @@ export class MarvMem {
       // --- No duplicate found: create new record ---
       const record: MemoryRecord = {
         id: this.idFactory(),
-        scope: normalizeScope(input.scope),
-        kind: input.kind,
-        content: input.content.trim(),
-        summary: input.summary?.trim() || summarizeContent(input.content),
-        confidence: clamp(input.confidence ?? 0.7, 0.05, 1),
-        importance: clamp(input.importance ?? 0.5, 0, 1),
-        source: input.source?.trim() || "manual",
-        tags: [...new Set((input.tags ?? []).map((tag) => normalizeText(tag)).filter(Boolean))],
-        metadata: input.metadata ? { ...input.metadata } : undefined,
+        scope,
+        kind: normalizedInput.kind,
+        content: normalizedInput.content.trim(),
+        summary: normalizedInput.summary?.trim() || summarizeContent(normalizedInput.content),
+        confidence: clamp(normalizedInput.confidence ?? 0.7, 0.05, 1),
+        importance: clamp(normalizedInput.importance ?? 0.5, 0, 1),
+        source: normalizedInput.source?.trim() || "manual",
+        tags: [...new Set((normalizedInput.tags ?? []).map((tag) => normalizeText(tag)).filter(Boolean))],
+        metadata: normalizedInput.metadata ? { ...normalizedInput.metadata } : undefined,
         createdAt: nowIso,
         updatedAt: nowIso,
       };
-      records.push(record);
-      await this.persistRecord(records, record);
+      await this.persistRecord(record);
       await this.syncDerivedState(record);
-      return record;
+      return cloneRecord(record);
     });
   }
 
   async update(id: string, patch: Partial<MemoryInput>): Promise<MemoryRecord | null> {
     return this.enqueue(async () => {
-      const records = await this.store.load();
-      const record = records.find((r) => r.id === id);
+      const record = await this.getStoredRecord(id);
       if (!record) return null;
 
       const nowIso = this.now().toISOString();
@@ -329,33 +376,99 @@ export class MarvMem {
       if (patch.metadata !== undefined) record.metadata = patch.metadata ? { ...patch.metadata } : undefined;
       record.updatedAt = nowIso;
 
-      await this.persistRecord(records, record);
+      if (isSessionRecord(record)) {
+        record.metadata = compactSessionMetadata(record.metadata);
+      }
+      await this.persistRecord(record);
       await this.syncDerivedState(record);
-      return { ...record, scope: { ...record.scope }, tags: [...record.tags] };
+      return cloneRecord(record);
     });
   }
 
-  async forget(id: string): Promise<boolean> {
+  async forget(id: string, input: { deletedBy?: string; reason?: string } = {}): Promise<boolean> {
     return this.enqueue(async () => {
-      const records = await this.store.load();
-      const index = records.findIndex((r) => r.id === id);
-      if (index === -1) return false;
-      records.splice(index, 1);
-      await this.deleteRecord(records, id);
+      const record = await this.getStoredRecord(id);
+      if (!record) return false;
+      const deletedAt = this.now().toISOString();
+      const deleted = this.store.softDelete
+        ? await this.store.softDelete(id, {
+            deletedAt,
+            deletedBy: input.deletedBy,
+            reason: input.reason,
+          })
+        : await this.fallbackSoftDelete(record, deletedAt, input);
+      if (!deleted) return false;
       await this.retrieval.deleteVector(id);
       await this.clearEntityLinks(id);
       return true;
     });
   }
 
-  async get(id: string): Promise<MemoryRecord | null> {
-    const records = await this.store.load();
-    return records.find((record) => record.id === id) ?? null;
+  async restore(id: string): Promise<MemoryRecord | null> {
+    return this.enqueue(async () => {
+      const nowIso = this.now().toISOString();
+      const restored = this.store.restore
+        ? await this.store.restore(id, nowIso)
+        : await this.fallbackRestore(id, nowIso);
+      if (restored) {
+        await this.syncDerivedState(restored);
+      }
+      return restored ? cloneRecord(restored) : null;
+    });
+  }
+
+  async supersede(id: string, winnerId: string): Promise<boolean> {
+    return this.enqueue(async () => {
+      const [record, winner] = await Promise.all([
+        this.getStoredRecord(id),
+        this.getStoredRecord(winnerId),
+      ]);
+      if (!record || !winner || id === winnerId) {
+        return false;
+      }
+      const updatedAt = this.now().toISOString();
+      const superseded = this.store.supersede
+        ? await this.store.supersede(id, winnerId, updatedAt)
+        : await this.fallbackSupersede(record, winnerId, updatedAt);
+      if (superseded) {
+        await this.retrieval.deleteVector(id);
+        await this.clearEntityLinks(id);
+      }
+      return superseded;
+    });
+  }
+
+  async get(id: string, options: MemoryGetOptions = {}): Promise<MemoryRecord | null> {
+    if (this.store.get) {
+      return await this.store.get(id, options);
+    }
+    const record = (await this.store.load()).find((entry) => entry.id === id);
+    return record && matchesVisibility(record, options) ? cloneRecord(record) : null;
+  }
+
+  async findSessionRecord(
+    scope: MemoryScope,
+    sessionId: string,
+    taskId?: string,
+  ): Promise<MemoryRecord | null> {
+    if (this.store.findSessionRecord) {
+      return await this.store.findSessionRecord(normalizeScope(scope), sessionId, taskId);
+    }
+    return (
+      (await this.list({ scopes: [scope] })).find((record) =>
+        stringMetadata(record.metadata, "sessionId") === sessionId &&
+        (!taskId || stringMetadata(record.metadata, "taskId") === taskId),
+      ) ?? null
+    );
   }
 
   async list(options: MemoryListOptions = {}): Promise<MemoryRecord[]> {
+    if (this.store.list) {
+      return await this.store.list(options);
+    }
     const records = await this.store.load();
     const filtered = records
+      .filter((record) => matchesVisibility(record, options))
       .filter((record) => matchesRequestedScopes(record.scope, options.scopes))
       .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     if (options.limit && options.limit > 0) {
@@ -372,10 +485,23 @@ export class MarvMem {
 
     const queryTokens = uniqueTokens(normalizedQuery);
     const queryVector = embedTextHash(normalizedQuery, this.embeddingDimensions);
-    const records = await this.store.load();
-    const scopedRecords = records.filter((record) => matchesRequestedScopes(record.scope, options.scopes));
+    const maxResults = options.maxResults ?? 8;
+    const candidateLimit = Math.max(maxResults * 8, 64);
+    const scopedRecords = this.store.searchCandidates
+      ? await this.store.searchCandidates(normalizedQuery, {
+          scopes: options.scopes,
+          limit: candidateLimit,
+        })
+      : (await this.store.load()).filter((record) =>
+          isRecordVisible(record) && matchesRequestedScopes(record.scope, options.scopes),
+        );
     const entityMatchedIds = await this.resolveEntityMemoryIds(normalizedQuery);
-    const hits: MemorySearchHit[] = [];
+    const scored: Array<{
+      id: string;
+      score: number;
+      reasons: MemorySearchHit["reasons"];
+      snippet: string;
+    }> = [];
     const w = this.weights;
 
     for (const record of scopedRecords) {
@@ -391,28 +517,46 @@ export class MarvMem {
       const recency = computeRecencyBoost(record.updatedAt, this.now());
       const importance = record.importance;
       const scope = resolveScopeWeight(record.scope, options.scopes);
-      const score =
+      const baseScore =
         lexical * w.lexical +
         hash * w.hash +
         recency * w.recency +
         importance * w.importance +
         scope * w.scope +
         entity * ENTITY_MATCH_BOOST;
+      const score = isSessionRecord(record) ? baseScore * 0.72 : baseScore;
       if (score < (options.minScore ?? 0.18)) {
         continue;
       }
-      hits.push({
-        record,
+      scored.push({
+        id: record.id,
         score,
         reasons: { lexical, hash, recency, importance, scope, entity },
         snippet: buildSnippet(record.content, queryTokens),
-        evidence: buildEvidenceRef(record),
       });
     }
 
-    return hits
+    const top = scored
       .toSorted((left, right) => right.score - left.score)
-      .slice(0, options.maxResults ?? 8);
+      .slice(0, maxResults);
+    const records = this.store.getMany
+      ? await this.store.getMany(top.map((hit) => hit.id))
+      : await Promise.all(top.map(async (hit) => await this.get(hit.id)));
+    const recordsById = new Map(
+      records.filter((record): record is MemoryRecord => Boolean(record)).map((record) => [record.id, record]),
+    );
+    return top.flatMap((hit) => {
+      const record = recordsById.get(hit.id);
+      return record
+        ? [{
+            record,
+            score: hit.score,
+            reasons: hit.reasons,
+            snippet: hit.snippet,
+            evidence: buildEvidenceRef(record),
+          }]
+        : [];
+    });
   }
 
   async recall(options: MemoryRecallOptions): Promise<MemoryRecallResult> {
@@ -461,23 +605,72 @@ export class MarvMem {
     return next;
   }
 
-  private async persistRecord(records: MemoryRecord[], record: MemoryRecord): Promise<void> {
+  private async persistRecord(record: MemoryRecord): Promise<void> {
     if (this.store.upsert) {
       await this.store.upsert(record);
       return;
     }
-    await this.store.save(records);
-  }
-
-  private async deleteRecord(records: MemoryRecord[], id: string): Promise<void> {
-    if (this.store.delete) {
-      await this.store.delete(id);
-      return;
+    const records = await this.store.load();
+    const index = records.findIndex((entry) => entry.id === record.id);
+    if (index === -1) {
+      records.push(record);
+    } else {
+      records[index] = record;
     }
     await this.store.save(records);
   }
 
+  private async getStoredRecord(id: string): Promise<MemoryRecord | null> {
+    if (this.store.get) {
+      return await this.store.get(id, { includeDeleted: false, includeDocuments: true });
+    }
+    return (await this.store.load()).find((record) => record.id === id && isRecordVisible(record)) ?? null;
+  }
+
+  private async fallbackSoftDelete(
+    record: MemoryRecord,
+    deletedAt: string,
+    input: { deletedBy?: string; reason?: string },
+  ): Promise<boolean> {
+    record.deletedAt = deletedAt;
+    record.deletedBy = input.deletedBy;
+    record.deleteReason = input.reason;
+    record.updatedAt = deletedAt;
+    await this.persistRecord(record);
+    return true;
+  }
+
+  private async fallbackRestore(id: string, updatedAt: string): Promise<MemoryRecord | null> {
+    const records = await this.store.load();
+    const record = records.find((entry) => entry.id === id);
+    if (!record) {
+      return null;
+    }
+    delete record.deletedAt;
+    delete record.deletedBy;
+    delete record.deleteReason;
+    delete record.supersededBy;
+    record.updatedAt = updatedAt;
+    await this.store.save(records);
+    return record;
+  }
+
+  private async fallbackSupersede(
+    record: MemoryRecord,
+    winnerId: string,
+    updatedAt: string,
+  ): Promise<boolean> {
+    record.supersededBy = winnerId;
+    record.updatedAt = updatedAt;
+    await this.persistRecord(record);
+    return true;
+  }
+
   private async syncDerivedState(record: MemoryRecord): Promise<void> {
+    if (!isRecordVisible(record) || record.source === "workbuddy_document") {
+      await this.retrieval.deleteVector(record.id);
+      return;
+    }
     await this.retrieval.indexRecord(record);
     await this.syncEntitiesForRecord(record);
   }
@@ -677,6 +870,46 @@ function matchesRequestedScopes(recordScope: MemoryScope, requestedScopes?: Memo
   return requestedScopes.some((scope) => scopeKey(scope) === key);
 }
 
+function matchesVisibility(record: MemoryRecord, options: MemoryGetOptions | MemoryListOptions): boolean {
+  if (!options.includeDeleted && !isRecordVisible(record)) {
+    return false;
+  }
+  if (!options.includeDocuments && record.source === "workbuddy_document") {
+    return false;
+  }
+  return true;
+}
+
+function isRecordVisible(record: MemoryRecord): boolean {
+  return !record.deletedAt && !record.supersededBy;
+}
+
+function isSessionMemoryInput(input: MemoryInput): boolean {
+  return (
+    input.kind === "note" &&
+    ((input.tags ?? []).some((tag) => normalizeText(tag) === "session") ||
+      Boolean(input.source?.includes("_session_")))
+  );
+}
+
+function isSessionRecord(record: MemoryRecord): boolean {
+  return (
+    record.kind === "note" &&
+    (record.tags.includes("session") ||
+      record.source.includes("_session_") ||
+      typeof record.metadata?.sessionId === "string")
+  );
+}
+
+function cloneRecord(record: MemoryRecord): MemoryRecord {
+  return {
+    ...record,
+    scope: { ...record.scope },
+    tags: [...record.tags],
+    metadata: record.metadata ? { ...record.metadata } : undefined,
+  };
+}
+
 function resolveScopeWeight(recordScope: MemoryScope, requestedScopes?: MemoryScope[]): number {
   if (!requestedScopes || requestedScopes.length === 0) {
     return 0.5;
@@ -708,7 +941,7 @@ function applyIncomingMarkers(record: MemoryRecord, input: MemoryInput): void {
     ...new Set([...record.tags, ...incomingTags]),
   ];
 
-  const incomingMetadata = input.metadata ? { ...input.metadata } : undefined;
+  const incomingMetadata = input.metadata ? compactMarkerMetadata(input.metadata) : undefined;
   const incomingSource = input.source?.trim();
   if (!incomingMetadata && (!incomingSource || incomingSource === record.source)) {
     return;
@@ -737,7 +970,7 @@ function applyIncomingMarkers(record: MemoryRecord, input: MemoryInput): void {
     ];
   }
   if ((incomingSource && incomingSource !== record.source) || metadataConflict) {
-    nextMetadata.markerHistory = [
+    const markerHistory = [
       ...objectArray(previousMetadata.markerHistory),
       {
         source: incomingSource ?? "manual",
@@ -745,8 +978,23 @@ function applyIncomingMarkers(record: MemoryRecord, input: MemoryInput): void {
         metadata: incomingMetadata ?? {},
       },
     ];
+    const deduped = new Map<string, Record<string, unknown>>();
+    for (const marker of markerHistory) {
+      deduped.set(JSON.stringify(marker), marker);
+    }
+    const uniqueMarkers = [...deduped.values()];
+    const dropped =
+      Math.max(0, markerHistory.length - uniqueMarkers.length) +
+      Math.max(0, uniqueMarkers.length - MAX_MARKER_HISTORY_ITEMS);
+    nextMetadata.markerHistory = uniqueMarkers.slice(-MAX_MARKER_HISTORY_ITEMS);
+    if (dropped > 0) {
+      nextMetadata.markerHistoryDropped =
+        (typeof previousMetadata.markerHistoryDropped === "number"
+          ? previousMetadata.markerHistoryDropped
+          : 0) + dropped;
+    }
   }
-  record.metadata = nextMetadata;
+  record.metadata = isSessionRecord(record) ? compactSessionMetadata(nextMetadata) : nextMetadata;
 }
 
 function stringArray(value: unknown): string[] {
@@ -757,6 +1005,144 @@ function objectArray(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value)
     ? value.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object" && !Array.isArray(entry))
     : [];
+}
+
+function compactMarkerMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
+  const compact: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (key === "markerHistory" || key === "sourceHistory") {
+      continue;
+    }
+    if (
+      typeof value !== "string" &&
+      typeof value !== "number" &&
+      typeof value !== "boolean" &&
+      value !== null
+    ) {
+      continue;
+    }
+    compact[key] = value;
+    if (JSON.stringify(compact).length > MAX_MARKER_METADATA_BYTES) {
+      delete compact[key];
+    }
+  }
+  return compact;
+}
+
+export function compactSessionMetadata(
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!metadata) {
+    return undefined;
+  }
+  const identityKeys = [
+    "agent",
+    "sessionId",
+    "taskId",
+    "cwd",
+    "timestamp",
+    "messageCount",
+    "lastMessageHash",
+    "lastImportedAt",
+    "lastCommittedAt",
+    "commitSource",
+    "resumeCount",
+    "origin",
+    "projectId",
+    "syncVersion",
+    "migration",
+  ];
+  const compact: Record<string, unknown> = pickMetadata(metadata, identityKeys);
+  const excludedKeys = new Set([
+    ...identityKeys,
+    "markerHistory",
+    "sourceHistory",
+    "transcript",
+    "messages",
+    "entries",
+  ]);
+  for (const [key, value] of Object.entries(metadata)) {
+    if (excludedKeys.has(key)) {
+      continue;
+    }
+    compact[key] = value;
+    if (JSON.stringify(compact).length > 6_144) {
+      delete compact[key];
+    }
+  }
+  const sourceHistory = stringArray(metadata.sourceHistory).slice(-8);
+  if (sourceHistory.length > 0) {
+    compact.sourceHistory = sourceHistory;
+  }
+  const markers = objectArray(metadata.markerHistory)
+    .map((marker) => ({
+      source: typeof marker.source === "string" ? marker.source : "manual",
+      tags: stringArray(marker.tags).slice(0, 8),
+      metadata: compactMarkerIdentity(asObject(marker.metadata)),
+    }))
+    .slice(-MAX_MARKER_HISTORY_ITEMS);
+  if (markers.length > 0) {
+    compact.markerHistory = markers;
+  }
+  const previousDropped =
+    typeof metadata.markerHistoryDropped === "number" ? metadata.markerHistoryDropped : 0;
+  const dropped = previousDropped + Math.max(0, objectArray(metadata.markerHistory).length - markers.length);
+  if (dropped > 0) {
+    compact.markerHistoryDropped = dropped;
+  }
+  if (JSON.stringify(compact).length <= MAX_SESSION_METADATA_BYTES) {
+    return compact;
+  }
+  delete compact.markerHistory;
+  compact.markerHistoryDropped = dropped + markers.length;
+  if (JSON.stringify(compact).length <= MAX_SESSION_METADATA_BYTES) {
+    return compact;
+  }
+  return pickMetadata(compact, ["agent", "sessionId", "taskId", "cwd", "timestamp", "messageCount"]);
+}
+
+function compactMarkerIdentity(metadata: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!metadata) {
+    return {};
+  }
+  const compact = pickMetadata(metadata, [
+    "agent",
+    "sessionId",
+    "taskId",
+    "cwd",
+    "timestamp",
+    "messageCount",
+    "projectionTarget",
+    "nativeMemoryPath",
+  ]);
+  if (JSON.stringify(compact).length <= MAX_MARKER_METADATA_BYTES) {
+    return compact;
+  }
+  return pickMetadata(compact, ["agent", "sessionId", "taskId"]);
+}
+
+function pickMetadata(
+  metadata: Record<string, unknown>,
+  keys: string[],
+): Record<string, unknown> {
+  const output: Record<string, unknown> = {};
+  for (const key of keys) {
+    const value = metadata[key];
+    if (
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    ) {
+      output[key] = value;
+    }
+  }
+  return output;
+}
+
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function computeRecencyBoost(iso: string, now: Date): number {
@@ -825,9 +1211,6 @@ export function formatRecallContext(hits: MemorySearchHit[], maxChars: number): 
     const markers = [`id: ${hit.record.id}`, `source: ${hit.record.source}`];
     if (hit.record.tags.length > 0) {
       markers.push(`tags: ${hit.record.tags.join(", ")}`);
-    }
-    if (hit.record.metadata) {
-      markers.push(`metadata: ${JSON.stringify(hit.record.metadata)}`);
     }
     const block = [
       `- [${hit.record.kind}] ${hit.record.scope.type}:${hit.record.scope.id} (score ${hit.score.toFixed(2)})`,

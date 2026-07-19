@@ -79,6 +79,9 @@ CREATE TABLE IF NOT EXISTS cloud_memories (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   deleted_at      TIMESTAMPTZ,
+  deleted_by      TEXT,
+  delete_reason   TEXT,
+  superseded_by   UUID,
   sync_version    BIGINT NOT NULL DEFAULT 0
 );
 

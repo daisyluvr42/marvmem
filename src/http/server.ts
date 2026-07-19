@@ -65,7 +65,13 @@ export function createMarvMemServer(options: MarvMemServerOptions) {
 
     // Health check (no auth required)
     if (pathname === "/v1/health" && req.method === "GET") {
-      json(res, 200, { status: "ok", version: "0.1.0" });
+      json(res, 200, {
+        status: "ok",
+        version: "0.1.0",
+        migrationBackup: options.agents?.storagePath
+          ? migrationBackupStatus(options.agents.storagePath)
+          : undefined,
+      });
       return;
     }
 
@@ -136,6 +142,33 @@ export function createMarvMemServer(options: MarvMemServerOptions) {
       return `http://${host}:${port}`;
     },
   };
+}
+
+function migrationBackupStatus(storagePath: string) {
+  try {
+    const directory = path.dirname(storagePath);
+    const prefix = `${path.basename(storagePath)}.pre-`;
+    const backups = fs.readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.startsWith(prefix) && entry.name.endsWith(".bak"))
+      .map((entry) => {
+        const backupPath = path.join(directory, entry.name);
+        return { path: backupPath, modifiedAt: fs.statSync(backupPath).mtimeMs };
+      })
+      .toSorted((left, right) => right.modifiedAt - left.modifiedAt);
+    const newest = backups[0];
+    if (!newest) {
+      return { exists: false };
+    }
+    const ageDays = Math.floor(Math.max(0, Date.now() - newest.modifiedAt) / 86_400_000);
+    return {
+      exists: true,
+      path: newest.path,
+      ageDays,
+      removalReminder: ageDays >= 30,
+    };
+  } catch {
+    return { exists: false };
+  }
 }
 
 // ---------------------------------------------------------------------------

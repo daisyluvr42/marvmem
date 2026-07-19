@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   applyHermesMemoryWrite,
   createHermesAgentMemoryAdapter,
@@ -157,6 +158,8 @@ RAW_JSON_END -->
       inferencer: async ({ prompt }) => ({ ok: true, text: `Summary: ${prompt}` }),
     });
 
+    assert.equal(await writeWorkBuddyInstructions(memoryPath), true);
+
     const { adapter, imported } = await installWorkBuddyMemoryTakeover({
       memory,
       defaultScopes: [{ type: "agent", id: "workbuddy-test" }],
@@ -168,9 +171,8 @@ RAW_JSON_END -->
     assert.equal(imported.memoryEntries, 1);
     assert.equal(imported.nativeMemoryEntries, 1);
 
-    assert.equal(await writeWorkBuddyInstructions(memoryPath), true);
+    assert.equal(await writeWorkBuddyInstructions(soulPath), true);
     await writeFile(memoryPath, "- Use pnpm workspaces.\n- Manual edits should survive takeover.\n", "utf8");
-    assert.equal(await writeWorkBuddyInstructions(memoryPath), true);
     await memory.remember({
       scope: { type: "agent", id: "workbuddy-test" },
       kind: "preference",
@@ -185,22 +187,139 @@ RAW_JSON_END -->
     const nextMemory = await readFile(memoryPath, "utf8");
 
     assert.match(nextSoul, /calm work assistant/);
+    assert.equal(nextSoul.match(/marvmem-agent-instructions:start/g)?.length, 1);
+    assert.match(nextSoul, /memory_context/);
+    assert.match(nextSoul, /Internal recall requirement/);
+    assert.match(nextSoul, /Do this silently/);
+    assert.doesNotMatch(nextSoul, /Trigger words include/);
     assert.match(nextUser, /concise Chinese replies/);
     assert.match(nextUser, /numbered lists/);
     assert.match(nextMemory, /Use pnpm workspaces/);
     assert.match(nextMemory, /Manual edits should survive takeover/);
-    assert.match(nextMemory, /WorkBuddy native memory profile v7/);
+    assert.doesNotMatch(nextMemory, /WorkBuddy native memory profile v7/);
     assert.doesNotMatch(nextMemory, /Native session detail should be searchable/);
-    assert.equal(nextMemory.match(/marvmem-agent-instructions:start/g)?.length, 1);
-    assert.match(nextMemory, /memory_context/);
-    assert.match(nextMemory, /Internal recall requirement/);
-    assert.match(nextMemory, /Do this silently/);
-    assert.doesNotMatch(nextMemory, /Trigger words include/);
+    assert.doesNotMatch(nextMemory, /marvmem-agent-instructions:start/);
 
     const records = await memory.list({ scopes: [{ type: "agent", id: "workbuddy-test" }] });
     assert.equal(records.some((record) => record.content.includes("MarvMem memory workflow")), false);
-    assert.equal(records.some((record) => record.content.includes("Native session detail should be searchable")), true);
+    assert.equal(records.some((record) => record.content.includes("Native session detail should be searchable")), false);
+    const deletedRecords = await memory.list({
+      scopes: [{ type: "agent", id: "workbuddy-test" }],
+      includeDeleted: true,
+    });
+    assert.equal(
+      deletedRecords.some((record) =>
+        record.content.includes("Native session detail should be searchable") &&
+        record.deletedBy === "workbuddy_markdown",
+      ),
+      true,
+    );
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("WorkBuddy managed edits update records and deletions soft-delete them without flattening Markdown", async () => {
+  const root = await mkdtemp(join(tmpdir(), "marvmem-workbuddy-reconcile-"));
+  const workbuddyHome = join(root, ".workbuddy");
+  const memoryPath = join(workbuddyHome, "MEMORY.md");
+  try {
+    await mkdir(workbuddyHome, { recursive: true });
+    await writeFile(
+      join(workbuddyHome, "SOUL.md"),
+      "# Assistant\n\n```text\nkeep this code block\n```\n",
+      "utf8",
+    );
+    await writeFile(join(workbuddyHome, "USER.md"), "# User\n\nKeep this paragraph.\n", "utf8");
+    await writeFile(memoryPath, "# Memory\n\nNative structure stays here.\n", "utf8");
+    const memory = createMarvMem({ store: new InMemoryStore() });
+    const adapter = createWorkBuddyMemoryAdapter({
+      memory,
+      defaultScopes: [{ type: "agent", id: "workbuddy-test" }],
+      files: { homePath: workbuddyHome },
+    });
+    const managed = await memory.remember({
+      scope: { type: "agent", id: "workbuddy-test" },
+      kind: "note",
+      content: "Use pnpm workspaces.",
+      source: "workbuddy_markdown",
+      tags: ["workbuddy", "memory"],
+      metadata: { projectionTarget: "memory" },
+    }, { dedupe: false });
+    await adapter.syncProjection();
+
+    let projected = await readFile(memoryPath, "utf8");
+    assert.match(projected, /# Memory/);
+    assert.match(projected, /Native structure stays here/);
+    assert.match(projected, new RegExp(`marvmem-record:${managed.id}`));
+
+    projected = projected.replace("- Use pnpm workspaces.", "- Use pnpm workspaces and catalogs.");
+    await writeFile(memoryPath, projected, "utf8");
+    await adapter.syncProjection();
+    assert.equal((await memory.get(managed.id))?.content, "Use pnpm workspaces and catalogs.");
+
+    projected = (await readFile(memoryPath, "utf8")).replace(
+      new RegExp(`<!-- marvmem-record:${managed.id} -->\\n- [^\\n]+\\n?`, "u"),
+      "",
+    );
+    await writeFile(memoryPath, projected, "utf8");
+    await adapter.syncProjection();
+    assert.equal(await memory.get(managed.id), null);
+    const tombstone = await memory.get(managed.id, { includeDeleted: true });
+    assert.equal(tombstone?.deletedBy, "workbuddy_markdown");
+    assert.equal((await memory.search("pnpm catalogs")).length, 0);
+
+    const soul = await readFile(join(workbuddyHome, "SOUL.md"), "utf8");
+    assert.match(soul, /# Assistant/);
+    assert.match(soul, /```text\nkeep this code block\n```/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("WorkBuddy watcher reconciles direct managed-file deletions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "marvmem-workbuddy-watch-"));
+  const workbuddyHome = join(root, ".workbuddy");
+  const memoryPath = join(workbuddyHome, "MEMORY.md");
+  let stopWatching: (() => void) | undefined;
+  try {
+    await mkdir(workbuddyHome, { recursive: true });
+    await writeFile(join(workbuddyHome, "SOUL.md"), "# Assistant\n", "utf8");
+    await writeFile(join(workbuddyHome, "USER.md"), "# User\n", "utf8");
+    await writeFile(memoryPath, "# Memory\n", "utf8");
+    const memory = createMarvMem({ store: new InMemoryStore() });
+    const adapter = createWorkBuddyMemoryAdapter({
+      memory,
+      defaultScopes: [{ type: "agent", id: "workbuddy-test" }],
+      files: { homePath: workbuddyHome },
+    });
+    const managed = await memory.remember({
+      scope: { type: "agent", id: "workbuddy-test" },
+      kind: "note",
+      content: "Remove this projected memory.",
+      source: "workbuddy_markdown",
+      tags: ["workbuddy", "memory"],
+      metadata: { projectionTarget: "memory" },
+    }, { dedupe: false });
+    await adapter.syncProjection();
+    stopWatching = await adapter.startWatching();
+
+    const projected = (await readFile(memoryPath, "utf8")).replace(
+      new RegExp(`<!-- marvmem-record:${managed.id} -->\\n- [^\\n]+\\n?`, "u"),
+      "",
+    );
+    await writeFile(memoryPath, projected, "utf8");
+
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if ((await memory.get(managed.id, { includeDeleted: true }))?.deletedAt) {
+        break;
+      }
+      await delay(50);
+    }
+    const tombstone = await memory.get(managed.id, { includeDeleted: true });
+    assert.equal(tombstone?.deletedBy, "workbuddy_markdown");
+  } finally {
+    stopWatching?.();
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createMarvMem, type MarvMem, type MarvMemOptions } from "../core/index.js";
+import { RuleBasedEvaluator } from "../core/evaluator.js";
 import type { MemoryScope } from "../core/types.js";
 import { createMemoryMcpHandler } from "./handler.js";
 
@@ -33,6 +34,7 @@ export async function runMemoryMcpStdioServer(
         path: options.storagePath ?? defaultMemoryMcpStoragePath(),
       },
       retrieval: options.retrieval,
+      evaluator: new RuleBasedEvaluator(),
     });
   const handler = createMemoryMcpHandler({
     memory,

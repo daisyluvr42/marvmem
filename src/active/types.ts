@@ -17,6 +17,7 @@ export type ActiveMemoryStore = {
     document: Omit<ActiveMemoryDocument, "updatedAt"> & { updatedAt?: string },
   ): Promise<ActiveMemoryDocument>;
   delete(kind: ActiveMemoryKind, scope: MemoryScope): Promise<boolean>;
+  listRecentScopes(limit: number): Promise<MemoryScope[]>;
 };
 
 export type ActiveMemoryManagerOptions = {

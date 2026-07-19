@@ -5,7 +5,7 @@
 ## 你会得到什么
 
 - WorkBuddy 里出现 `marvmem` MCP 服务
-- 15 个 MarvMem 工具全部启用
+- 6 个聚合式 MarvMem 工具全部启用
 - 新写入的 WorkBuddy 记忆默认进入 `agent:workbuddy`
 - 原有 `~/.workbuddy/SOUL.md`、`USER.md`、`MEMORY.md` 会被导入 MarvMem，并继续作为 Markdown 映射文件保留
 - 不传 scope 的搜索和召回可以读取共享记忆库，例如以前由 Codex、Claude Code、Antigravity 写入的记忆
@@ -54,6 +54,12 @@ npm run build
 node dist/bin/marvmem-agent.js install workbuddy
 ```
 
+如果不想导入历史 session，可以加 `--skip-import`；WorkBuddy 三份 Markdown 的接管仍会执行：
+
+```bash
+node dist/bin/marvmem-agent.js install workbuddy --skip-import
+```
+
 这个命令会写入：
 
 ```text
@@ -68,7 +74,18 @@ node dist/bin/marvmem-agent.js install workbuddy
 ~/.workbuddy/MEMORY.md
 ```
 
-接管后，主要记忆存储在 MarvMem 数据库中；这三份文件仍留在原位置，作为 WorkBuddy 可继续读取的 Markdown 映射。每次 WorkBuddy 通过 MarvMem 写入记忆时，MarvMem 会先吸收这三份文件里的直接改动，再刷新映射内容，尽量不改变原有使用体验。
+接管后，主要记忆存储在 MarvMem 数据库中；三份文件仍留在原位置。原有标题、段落、代码块和空行不会被扁平化，MarvMem 只在文件尾部维护：
+
+```markdown
+<!-- marvmem-projection:start -->
+<!-- marvmem-record:记录 ID -->
+- 一条托管记忆
+<!-- marvmem-projection:end -->
+```
+
+直接编辑带记录 ID 的托管条目会更新数据库原记录；删除条目和它的记录 ID 会全局软删除，之后不会再被其他 agent 召回；在托管区新增无 ID 的 bullet 会创建新记忆，或在只有一个完全匹配 tombstone 时恢复原记录。MCP 运行时会监听这三份文件，未运行期间的修改会在下次启动时同步。
+
+安装器会把 MarvMem 使用规则写进 `SOUL.md`，让 WorkBuddy 每次读取自身规则时都能看到；`MEMORY.md` 只保留普通记忆投影。
 
 配置大致长这样：
 
@@ -160,12 +177,16 @@ marvmem
 
 ```bash
 cd /path/to/marvmem
-node dist/bin/marvmem-agent.js update workbuddy
+node dist/bin/marvmem-agent.js update all
 ```
 
 然后在 WorkBuddy 的 MCP 服务管理里刷新或重新启用 `marvmem`。
 
 ## 常见问题
+
+### 从文件里删除的记忆又出现了
+
+确认删除的是 `marvmem-projection` 区内完整的托管条目，包括它上方的 `marvmem-record` 注释。新版会把这个动作写成数据库软删除；不要只把同样的文字从文件其他普通段落中删掉。
 
 ### WorkBuddy 说找不到 MarvMem 记忆库
 

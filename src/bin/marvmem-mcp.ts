@@ -3,6 +3,7 @@
 import { parseMemoryScopeType, type MemoryScope } from "../core/types.js";
 import { defaultMemoryMcpStoragePath, runMemoryMcpStdioServer } from "../mcp/stdio.js";
 import { createMarvMem, type MarvMemOptions } from "../core/memory.js";
+import { RuleBasedEvaluator } from "../core/evaluator.js";
 import { createWorkBuddyMemoryAdapter } from "../adapters/workbuddy.js";
 
 type CliConfig = {
@@ -56,6 +57,7 @@ async function main(): Promise<void> {
         path: config.storagePath ?? defaultMemoryMcpStoragePath(),
       },
       retrieval: config.retrieval,
+      evaluator: new RuleBasedEvaluator(),
     });
     const adapter = createWorkBuddyMemoryAdapter({
       memory,
@@ -63,13 +65,18 @@ async function main(): Promise<void> {
       files: config.workbuddyHome ? { homePath: config.workbuddyHome } : undefined,
     });
     await adapter.syncProjection();
-    await runMemoryMcpStdioServer({
-      ...config,
-      memory,
-      onMemoryChanged: async () => {
-        await adapter.syncProjection();
-      },
-    });
+    const stopWatching = await adapter.startWatching();
+    try {
+      await runMemoryMcpStdioServer({
+        ...config,
+        memory,
+        onMemoryChanged: async () => {
+          await adapter.syncProjection();
+        },
+      });
+    } finally {
+      stopWatching();
+    }
     return;
   }
   await runMemoryMcpStdioServer(config);

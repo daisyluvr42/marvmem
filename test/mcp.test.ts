@@ -138,6 +138,37 @@ test("MCP write and scope-bound tools use configured default scope", async () =>
   assert.equal(activeParsed.document.scope.id, "workbuddy");
 });
 
+test("MCP initialize derives a default agent scope from clientInfo.name", async () => {
+  const memory = createMarvMem({ store: new InMemoryStore() });
+  const handler = createMemoryMcpHandler({ memory });
+
+  await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "Claude Code", version: "1.0.0" },
+    },
+  });
+  const write = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/call",
+    params: {
+      name: "memory_record",
+      arguments: {
+        action: "write",
+        content: "The initialized client can write without an explicit scope.",
+        kind: "fact",
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+  const parsed = JSON.parse(write.result?.content?.[0]?.text ?? "{}");
+  assert.deepEqual(parsed.record?.scope, { type: "agent", id: "claude" });
+});
+
 test("MCP mutating tools can trigger projection sync callbacks", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
   let syncs = 0;
@@ -206,9 +237,9 @@ test("MCP read tools with a default write scope still search shared memory", asy
   })) as { result?: { content?: Array<{ text: string }> } };
 
   const recall = JSON.parse(recallResult.result?.content?.[0]?.text ?? "{}");
-  assert.equal(recall.hits?.[0]?.record.scope.id, "codex");
+  assert.equal(recall.hits?.[0]?.scope.id, "codex");
   assert.match(recall.injectedContext, /AI application optionality/);
-  assert.equal(recall.hits?.[0]?.record.content, undefined);
+  assert.equal(recall.hits?.[0]?.content, undefined);
 });
 
 test("MCP update and delete stay within the configured default scope", async () => {
@@ -355,11 +386,25 @@ test("memory_context exposes record markers through MCP", async () => {
   const recall = JSON.parse(recallResult.result?.content?.[0]?.text ?? "{}");
   assert.match(recall.injectedContext, /source: cursor_session_import/);
   assert.match(recall.injectedContext, /tags: cursor, session, release/);
-  assert.match(recall.injectedContext, /"sessionId":"cursor-1"/);
-  assert.match(recall.navigationContext, /memory_record/);
-  assert.equal(recall.hits?.[0]?.record.source, "cursor_session_import");
-  assert.equal(recall.hits?.[0]?.evidence?.tools?.[0]?.name, "memory_record");
-  assert.deepEqual(recall.hits?.[0]?.record.metadata, {
+  assert.equal(recall.navigationContext, undefined);
+  assert.equal(recall.evidence, undefined);
+  assert.equal(recall.layers, undefined);
+  assert.equal(recall.hits?.[0]?.source, "cursor_session_import");
+
+  const exactResult = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 3,
+    method: "tools/call",
+    params: {
+      name: "memory_record",
+      arguments: {
+        action: "get",
+        id: recall.hits?.[0]?.id,
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+  const exact = JSON.parse(exactResult.result?.content?.[0]?.text ?? "{}");
+  assert.deepEqual(exact.record.metadata, {
     sessionId: "cursor-1",
     taskId: "cursor-session-cursor-1",
   });
@@ -434,6 +479,41 @@ test("memory_record list and delete work through MCP", async () => {
 
   const listedAfter = JSON.parse(listAfter.result?.content?.[0]?.text ?? "{}");
   assert.equal(listedAfter.records?.length, 0);
+
+  const tombstoneResult = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 5,
+    method: "tools/call",
+    params: {
+      name: "memory_record",
+      arguments: {
+        action: "get",
+        id: recordId,
+        includeDeleted: true,
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+  const tombstone = JSON.parse(tombstoneResult.result?.content?.[0]?.text ?? "{}");
+  assert.equal(typeof tombstone.record?.deletedAt, "string");
+  assert.equal(tombstone.record?.deletedBy, "mcp:user:bob");
+
+  const restoreResult = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 6,
+    method: "tools/call",
+    params: {
+      name: "memory_record",
+      arguments: {
+        action: "restore",
+        id: recordId,
+        scopeType: "user",
+        scopeId: "bob",
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+  const restored = JSON.parse(restoreResult.result?.content?.[0]?.text ?? "{}");
+  assert.equal(restored.restored, true);
+  assert.equal(restored.record?.deletedAt, undefined);
 });
 
 test("memory_session stores host-distilled session state without calling an inferencer", async () => {
@@ -569,7 +649,7 @@ test("memory_session active governance can be deep-maintained by the host", asyn
   assert.equal(commit.active?.experience?.content, "Reusable lesson after host light governance.");
   assert.equal(commit.active?.experience?.metadata?.governanceReport?.removedDuplicates, 1);
   assert.equal(commit.maintenanceRequest?.kind, "active_memory_maintenance");
-  assert.ok(commit.maintenanceRequest?.palaceRecords?.length >= 1);
+  assert.deepEqual(commit.maintenanceRequest?.palaceRecords, []);
 
   const prepareResult = (await handler.handleRequest({
     jsonrpc: "2.0",
@@ -630,6 +710,76 @@ test("memory_session active governance can be deep-maintained by the host", asyn
   assert.equal(second.maintenanceRequest, undefined);
 });
 
+test("maintenance exposes cross-scope conflicts and can supersede stale palace records", async () => {
+  const memory = createMarvMem({ store: new InMemoryStore() });
+  const handler = createMemoryMcpHandler({ memory });
+  const stale = await memory.remember({
+    scope: { type: "agent", id: "codex" },
+    kind: "fact",
+    content: "WorkBuddy instruction file is MEMORY.md.",
+    source: "codex",
+  });
+  const current = await memory.remember({
+    scope: { type: "repo", id: "marvmem" },
+    kind: "repo_fact",
+    content: "WorkBuddy instruction file is now SOUL.md instead of MEMORY.md.",
+    source: "repo",
+  });
+
+  const prepareResult = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: "memory_maintenance",
+      arguments: {
+        action: "prepare",
+        scopeType: "agent",
+        scopeId: "codex",
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+  const prepared = JSON.parse(prepareResult.result?.content?.[0]?.text ?? "{}");
+  assert.equal(
+    prepared.request?.conflictCandidates?.some(
+      (candidate: { left?: { id?: string }; right?: { id?: string } }) =>
+        [candidate.left?.id, candidate.right?.id].includes(stale.id) &&
+        [candidate.left?.id, candidate.right?.id].includes(current.id),
+    ),
+    true,
+  );
+
+  const applyResult = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/call",
+    params: {
+      name: "memory_maintenance",
+      arguments: {
+        action: "apply",
+        agent: "codex",
+        activeContext: "WorkBuddy instructions now live in SOUL.md.",
+        scopeType: "agent",
+        scopeId: "codex",
+        recordActions: [
+          {
+            action: "supersede",
+            id: stale.id,
+            winnerId: current.id,
+            scopeType: "agent",
+            scopeId: "codex",
+            reason: "Repository state supersedes the older agent memory.",
+          },
+        ],
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+  const applied = JSON.parse(applyResult.result?.content?.[0]?.text ?? "{}");
+  assert.equal(applied.recordActions?.[0]?.applied, true);
+  assert.equal(await memory.get(stale.id), null);
+  assert.equal((await memory.get(stale.id, { includeDeleted: true }))?.supersededBy, current.id);
+});
+
 test("memory_context respects maxChars through MCP", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
   const handler = createMemoryMcpHandler({ memory });
@@ -666,5 +816,57 @@ test("memory_context respects maxChars through MCP", async () => {
   })) as { result?: { content?: Array<{ text: string }> } };
 
   const recall = JSON.parse(recallResult.result?.content?.[0]?.text ?? "{}");
-  assert.equal(recall.injectedContext, "Relevant long-term memory:\nUse these memories as supporting context.");
+  assert.equal(recall.injectedContext.length <= 40, true);
+  assert.equal(recall.injectedContext, "Relevant long-term memory:\nUse these mem");
+});
+
+test("default memory_context response stays compact unless verbose is requested", async () => {
+  const memory = createMarvMem({ store: new InMemoryStore() });
+  const handler = createMemoryMcpHandler({ memory });
+  for (let index = 0; index < 8; index += 1) {
+    await memory.remember({
+      scope: { type: "repo", id: `repo-${index}` },
+      kind: "fact",
+      content: `Compact recall fact ${index} about WorkBuddy memory governance.`,
+      summary: `WorkBuddy memory governance fact ${index}`,
+      metadata: { payload: "x".repeat(2_000) },
+    }, { dedupe: false });
+  }
+
+  const compactResult = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: "memory_context",
+      arguments: {
+        action: "recall",
+        message: "WorkBuddy memory governance",
+        maxChars: 2_000,
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+  const compactText = compactResult.result?.content?.[0]?.text ?? "";
+  const compact = JSON.parse(compactText);
+  assert.equal(compactText.length < 6_000, true);
+  assert.equal(compact.layers, undefined);
+  assert.equal(compact.evidence, undefined);
+
+  const verboseResult = (await handler.handleRequest({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/call",
+    params: {
+      name: "memory_context",
+      arguments: {
+        action: "recall",
+        message: "WorkBuddy memory governance",
+        maxChars: 2_000,
+        verbose: true,
+      },
+    },
+  })) as { result?: { content?: Array<{ text: string }> } };
+  const verbose = JSON.parse(verboseResult.result?.content?.[0]?.text ?? "{}");
+  assert.ok(verbose.layers);
+  assert.ok(verbose.evidence);
 });

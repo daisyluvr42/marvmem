@@ -68,6 +68,25 @@ test("builds recall context through the runtime layer", async () => {
   assert.equal(recall.layers?.navigation, recall.navigationContext);
 });
 
+test("no-scope recall includes recently active scopes and respects the final budget", async () => {
+  const memory = createMarvMem({ store: new InMemoryStore() });
+  const runtime = createMemoryRuntime({ memory });
+  await memory.active.write({
+    kind: "context",
+    scope: { type: "repo", id: "marvmem" },
+    content: "The active implementation is migrating WorkBuddy instructions to SOUL.md.",
+  });
+
+  const recall = await runtime.buildRecallContext({
+    userMessage: "What is active now?",
+    maxChars: 120,
+  });
+
+  assert.match(recall.layers?.active ?? "", /\[repo:marvmem\]/);
+  assert.match(recall.layers?.active ?? "", /SOUL\.md/);
+  assert.equal(recall.injectedContext.length <= 120, true);
+});
+
 test("optional LLM proposal extractor can capture structured memories", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
   const runtime = createMemoryRuntime({

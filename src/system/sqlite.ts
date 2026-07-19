@@ -35,12 +35,24 @@ export function ensureMemorySubsystemSchema(db: DatabaseSync): void {
       "tags_json TEXT NOT NULL, " +
       "metadata_json TEXT, " +
       "created_at TEXT NOT NULL, " +
-      "updated_at TEXT NOT NULL" +
+      "updated_at TEXT NOT NULL, " +
+      "deleted_at TEXT, " +
+      "deleted_by TEXT, " +
+      "delete_reason TEXT, " +
+      "superseded_by TEXT" +
       ");",
   );
+  ensureColumn(db, "memory_items", "deleted_at", "TEXT");
+  ensureColumn(db, "memory_items", "deleted_by", "TEXT");
+  ensureColumn(db, "memory_items", "delete_reason", "TEXT");
+  ensureColumn(db, "memory_items", "superseded_by", "TEXT");
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_memory_items_scope " +
       "ON memory_items(scope_type, scope_id, updated_at DESC);",
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_memory_items_visible " +
+      "ON memory_items(deleted_at, superseded_by, updated_at DESC);",
   );
   db.exec(
     "CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(" +
@@ -160,6 +172,12 @@ export function ensureMemorySubsystemSchema(db: DatabaseSync): void {
   db.exec("CREATE INDEX IF NOT EXISTS idx_entity_relations_source ON entity_relations(source_entity_id);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_entity_relations_target ON entity_relations(target_entity_id);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_entity_relations_memory ON entity_relations(memory_id);");
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS schema_migrations (" +
+      "id TEXT PRIMARY KEY, " +
+      "applied_at TEXT NOT NULL" +
+      ");",
+  );
 }
 
 export function parseJsonObject(
@@ -190,4 +208,12 @@ export function parseJsonStringArray(value: string | null | undefined): string[]
   } catch {
     return [];
   }
+}
+
+function ensureColumn(db: DatabaseSync, table: string, column: string, definition: string): void {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>;
+  if (rows.some((row) => row.name === column)) {
+    return;
+  }
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
 }

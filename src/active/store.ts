@@ -67,6 +67,20 @@ export class SqliteActiveMemoryStore implements ActiveMemoryStore {
     const result = db.prepare("SELECT changes() AS changes").get() as { changes?: number } | undefined;
     return Number(result?.changes ?? 0) > 0;
   }
+
+  async listRecentScopes(limit: number): Promise<MemoryScope[]> {
+    using db = openSqliteDatabase(this.filePath);
+    const rows = db
+      .prepare(
+        "SELECT scope_type, scope_id, MAX(updated_at) AS latest " +
+          "FROM active_documents GROUP BY scope_type, scope_id ORDER BY latest DESC LIMIT ?",
+      )
+      .all(limit) as Array<{ scope_type: string; scope_id: string }>;
+    return rows.map((row) => ({
+      type: row.scope_type as MemoryScope["type"],
+      id: row.scope_id,
+    }));
+  }
 }
 
 export class InMemoryActiveMemoryStore implements ActiveMemoryStore {
@@ -93,6 +107,21 @@ export class InMemoryActiveMemoryStore implements ActiveMemoryStore {
 
   async delete(kind: ActiveMemoryKind, scope: MemoryScope): Promise<boolean> {
     return this.documents.delete(keyFor(kind, scope));
+  }
+
+  async listRecentScopes(limit: number): Promise<MemoryScope[]> {
+    const latest = new Map<string, { scope: MemoryScope; updatedAt: string }>();
+    for (const document of this.documents.values()) {
+      const key = `${document.scope.type}:${document.scope.id}`;
+      const existing = latest.get(key);
+      if (!existing || document.updatedAt > existing.updatedAt) {
+        latest.set(key, { scope: document.scope, updatedAt: document.updatedAt });
+      }
+    }
+    return [...latest.values()]
+      .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, limit)
+      .map((entry) => ({ ...entry.scope }));
   }
 }
 

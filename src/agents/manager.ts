@@ -127,7 +127,7 @@ export const AGENTS: Record<AgentId, AgentDefinition> = {
     scopeId: "workbuddy",
     defaultSessionsRoot: (home) => join(home, ".workbuddy"),
     configPath: (home) => join(home, ".workbuddy", "mcp.json"),
-    instructionsPath: (home) => join(home, ".workbuddy", "MEMORY.md"),
+    instructionsPath: (home) => join(home, ".workbuddy", "SOUL.md"),
   },
   trae: {
     label: "Trae Solo",
@@ -195,7 +195,7 @@ export async function installAgent(
     result.importSummary = await importSessions(agent, options);
     result.import = "imported";
   }
-  if (!options.skipImport && agent === "workbuddy") {
+  if (agent === "workbuddy") {
     result.importSummary = await installWorkBuddyTakeover(options);
     result.import = "imported";
   }
@@ -479,7 +479,7 @@ async function installWorkBuddyTakeover(options: ResolvedAgentInstallOptions): P
 }
 
 function workBuddyUpdateCommand(): string {
-  return `node ${shellQuote(agentBinPath("marvmem-agent"))} update workbuddy`;
+  return `node ${shellQuote(agentBinPath("marvmem-agent"))} update all`;
 }
 
 function instructionBlock(agent: AgentId): string {

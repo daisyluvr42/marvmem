@@ -37,8 +37,12 @@ export function createMemoryRuntime(params: {
         scopes,
         maxChars,
       });
+      const activeScopes = scopes.length > 0 ? scopes : await params.memory.active.recentScopes(3);
       const activeBlocks = (
-        await Promise.all(scopes.map(async (scope) => await params.memory.active.formatRecall(scope)))
+        await Promise.all(activeScopes.map(async (scope) => {
+          const block = await params.memory.active.formatRecall(scope);
+          return block.trim() ? `[${scope.type}:${scope.id}]\n${block}` : "";
+        }))
       )
         .map((block) => block.trim())
         .filter(Boolean);
@@ -73,9 +77,13 @@ export function createMemoryRuntime(params: {
         .filter(Boolean)
         .join("\n\n")
         .trim();
+      const injectedContext = clampChars(
+        [stableContext, dynamicContext].filter(Boolean).join("\n\n").trim(),
+        maxChars,
+      );
       return {
         ...palaceRecall,
-        injectedContext: [stableContext, dynamicContext].filter(Boolean).join("\n\n").trim(),
+        injectedContext,
         stableContext: stableContext || undefined,
         dynamicContext: dynamicContext || undefined,
         navigationContext: navigationLayer || undefined,
@@ -205,6 +213,13 @@ export function createMemoryRuntime(params: {
       ].join(" ");
     },
   };
+}
+
+function clampChars(content: string, maxChars: number): string {
+  if (content.length <= maxChars) {
+    return content;
+  }
+  return content.slice(0, Math.max(0, maxChars)).trimEnd();
 }
 
 export function inferMemoryProposals(turn: MemoryTurnInput): CapturedMemoryProposal[] {

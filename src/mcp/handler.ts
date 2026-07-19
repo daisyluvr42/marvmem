@@ -15,7 +15,7 @@ const ACTIVE_EXPERIENCE_MAX_CHARS = 800;
 const SCOPE_TYPE_SCHEMA = { type: "string", enum: [...MEMORY_SCOPE_TYPES] };
 const SERVER_INSTRUCTIONS =
   "Use memory_context with action='recall' and no scopeType/scopeId when continuity or prior decisions matter, so MarvMem can search shared memory across agents. " +
-  "Use memory_record with action='write' for durable user preferences, facts, or explicit remember requests. " +
+  "Use memory_record with action='write' for durable user preferences, facts, or explicit remember requests; when no configured scope exists, MarvMem derives agent:<clientInfo.name> during initialize. " +
   "Use memory_session with action='commit' when the host agent has already distilled a session; include activeContext/activeExperience when available, and follow maintenanceRequest if returned. " +
   "Use memory_task with action='append' or action='window' for longer task-focused work.";
 
@@ -31,13 +31,14 @@ export function createMemoryToolSet(params: {
   memory: MarvMem;
   runtime?: MemoryRuntime;
   defaultScopes?: MemoryScope[];
+  getDefaultScopes?: () => MemoryScope[] | undefined;
   onMemoryChanged?: () => Promise<void>;
 }): MemoryToolDefinition[] {
   const runtime =
     params.runtime ??
     createMemoryRuntime({
       memory: params.memory,
-      defaultScopes: params.defaultScopes,
+      defaultScopes: resolveDefaultScopes(params),
     });
 
   return [
@@ -48,7 +49,7 @@ export function createMemoryToolSet(params: {
         type: "object",
         additionalProperties: false,
         properties: {
-          action: { type: "string", enum: ["search", "get", "list", "write", "update", "delete"] },
+          action: { type: "string", enum: ["search", "get", "list", "write", "update", "delete", "restore"] },
           id: { type: "string" },
           query: { type: "string" },
           scopeType: SCOPE_TYPE_SCHEMA,
@@ -64,6 +65,9 @@ export function createMemoryToolSet(params: {
           limit: { type: "number" },
           maxResults: { type: "number" },
           minScore: { type: "number" },
+          includeDeleted: { type: "boolean" },
+          includeDocuments: { type: "boolean" },
+          reason: { type: "string" },
         },
         required: ["action"],
       },
@@ -80,18 +84,25 @@ export function createMemoryToolSet(params: {
           };
         }
         if (action === "get") {
-          return { record: await params.memory.get(expectString(args.id, "id")) };
+          return {
+            record: await params.memory.get(expectString(args.id, "id"), {
+              includeDeleted: args.includeDeleted === true,
+              includeDocuments: args.includeDocuments !== false,
+            }),
+          };
         }
         if (action === "list") {
           return {
             records: await params.memory.list({
               scopes: parseReadScopeArgs(args),
               limit: expectNumber(args.limit),
+              includeDeleted: args.includeDeleted === true,
+              includeDocuments: args.includeDocuments === true,
             }),
           };
         }
         if (action === "write") {
-          const scope = requireScope(args, params.defaultScopes);
+          const scope = requireScope(args, resolveDefaultScopes(params));
           return {
             record: await params.memory.remember({
               scope,
@@ -110,7 +121,7 @@ export function createMemoryToolSet(params: {
         }
         if (action === "update") {
           const id = expectString(args.id, "id");
-          const scope = requireDestructiveScope(args, params.defaultScopes);
+          const scope = requireDestructiveScope(args, resolveDefaultScopes(params));
           const existing = await params.memory.get(id);
           if (!existing || !sameScope(existing.scope, scope)) {
             return { record: null, updated: false };
@@ -129,14 +140,29 @@ export function createMemoryToolSet(params: {
         }
         if (action === "delete") {
           const id = expectString(args.id, "id");
-          const scope = requireDestructiveScope(args, params.defaultScopes);
+          const scope = requireDestructiveScope(args, resolveDefaultScopes(params));
           const existing = await params.memory.get(id);
           if (!existing || !sameScope(existing.scope, scope)) {
             return { deleted: false };
           }
-          return { deleted: await params.memory.forget(id) };
+          return {
+            deleted: await params.memory.forget(id, {
+              deletedBy: `mcp:${scope.type}:${scope.id}`,
+              reason: optionalString(args.reason),
+            }),
+          };
         }
-        throw new Error("action must be search, get, list, write, update, or delete");
+        if (action === "restore") {
+          const id = expectString(args.id, "id");
+          const scope = requireDestructiveScope(args, resolveDefaultScopes(params));
+          const existing = await params.memory.get(id, { includeDeleted: true });
+          if (!existing || !sameScope(existing.scope, scope)) {
+            return { record: null, restored: false };
+          }
+          const record = await params.memory.restore(id);
+          return { record, restored: record !== null };
+        }
+        throw new Error("action must be search, get, list, write, update, delete, or restore");
       },
     },
     {
@@ -155,6 +181,7 @@ export function createMemoryToolSet(params: {
           maxResults: { type: "number" },
           minScore: { type: "number" },
           maxChars: { type: "number" },
+          verbose: { type: "boolean" },
         },
         required: ["action"],
       },
@@ -201,7 +228,7 @@ export function createMemoryToolSet(params: {
       mutatesMemory: true,
       execute: async (args) => {
         const action = expectString(args.action, "action");
-        const scope = requireScope(args, params.defaultScopes);
+        const scope = requireScope(args, resolveDefaultScopes(params));
         if (action === "get") {
           return {
             context: await params.memory.active.read("context", scope),
@@ -254,6 +281,24 @@ export function createMemoryToolSet(params: {
           activeContext: { type: "string" },
           activeExperience: { type: "string" },
           governanceReport: { type: "object", additionalProperties: true },
+          recordActions: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                action: { type: "string", enum: ["update", "supersede", "softDelete", "restore"] },
+                id: { type: "string" },
+                winnerId: { type: "string" },
+                scopeType: SCOPE_TYPE_SCHEMA,
+                scopeId: { type: "string" },
+                content: { type: "string" },
+                summary: { type: "string" },
+                reason: { type: "string" },
+              },
+              required: ["action", "id", "scopeType", "scopeId"],
+            },
+          },
           scopeType: SCOPE_TYPE_SCHEMA,
           scopeId: { type: "string" },
           entries: {
@@ -306,7 +351,7 @@ export function createMemoryToolSet(params: {
         const activeExperience = optionalString(args.activeExperience);
         const governanceReport = asRecord(args.governanceReport) ?? undefined;
         const taskId = optionalString(args.taskId) ?? `${agent}:${sessionId}`;
-        const scope = parseScopeArgs(args, params.defaultScopes)?.[0];
+        const scope = parseScopeArgs(args, resolveDefaultScopes(params))?.[0];
         if (!scope) {
           throw new Error("scopeType and scopeId are required when no default scope is configured");
         }
@@ -487,7 +532,7 @@ export function createMemoryToolSet(params: {
         if (action === "append") {
           let task = await params.memory.task.get(taskId);
           if (!task) {
-            const scope = parseScopeArgs(args, params.defaultScopes)?.[0];
+            const scope = parseScopeArgs(args, resolveDefaultScopes(params))?.[0];
             if (!scope) {
               throw new Error("scopeType and scopeId are required when creating a task");
             }
@@ -536,7 +581,7 @@ export function createMemoryToolSet(params: {
       mutatesMemory: true,
       execute: async (args) => {
         const action = expectString(args.action, "action");
-        const scope = requireScope(args, params.defaultScopes);
+        const scope = requireScope(args, resolveDefaultScopes(params));
         if (action === "prepare") {
           return {
             request: await buildMaintenanceRequest(params.memory, scope, new Date().toISOString()),
@@ -545,17 +590,29 @@ export function createMemoryToolSet(params: {
         if (action === "apply") {
           const activeContext = optionalString(args.activeContext);
           const activeExperience = optionalString(args.activeExperience);
-          if (!activeContext && !activeExperience) {
-            throw new Error("activeContext or activeExperience is required for apply");
+          const recordActions = parseMaintenanceRecordActions(args.recordActions);
+          if (!activeContext && !activeExperience && recordActions.length === 0) {
+            throw new Error("activeContext, activeExperience, or recordActions is required for apply");
           }
           const nowIso = new Date().toISOString();
+          const agent = optionalString(args.agent) ?? "host";
           const governanceMetadata = compactRecord({
             lastLightGovernedAt: nowIso,
             lastDeepGovernedAt: nowIso,
-            lastGovernedBy: optionalString(args.agent) ?? "host",
+            lastGovernedBy: agent,
             governanceReport: asRecord(args.governanceReport) ?? undefined,
           });
+          const actionResults = [];
+          for (const recordAction of recordActions) {
+            actionResults.push(
+              await applyMaintenanceRecordAction(params.memory, recordAction, {
+                agent,
+                nowIso,
+              }),
+            );
+          }
           return {
+            recordActions: actionResults,
             context: activeContext
               ? await writeActiveDocument({
                   memory: params.memory,
@@ -606,7 +663,11 @@ export function createMemoryMcpHandler(params: {
   defaultScopes?: MemoryScope[];
   onMemoryChanged?: () => Promise<void>;
 }) {
-  const tools = createMemoryToolSet(params);
+  let inferredDefaultScopes = params.defaultScopes;
+  const tools = createMemoryToolSet({
+    ...params,
+    getDefaultScopes: () => inferredDefaultScopes,
+  });
   const toolMap = new Map(tools.map((tool) => [tool.name, tool]));
 
   return {
@@ -620,6 +681,14 @@ export function createMemoryMcpHandler(params: {
 
       if (method === "initialize") {
         const paramsRecord = asRecord(request.params);
+        if (!params.defaultScopes?.length) {
+          const clientInfo = asRecord(paramsRecord?.clientInfo);
+          const clientName = optionalString(clientInfo?.name);
+          const clientId = clientName ? normalizeClientAgentId(clientName) : undefined;
+          if (clientId) {
+            inferredDefaultScopes = [{ type: "agent", id: clientId }];
+          }
+        }
         const requestedVersion = typeof paramsRecord?.protocolVersion === "string"
           ? paramsRecord.protocolVersion
           : "";
@@ -668,12 +737,16 @@ export function createMemoryMcpHandler(params: {
           if (tool.mutatesMemory) {
             await params.onMemoryChanged?.();
           }
-          const output = compactToolResult(name, result);
+          const output = compactToolResult(name, result, args);
+          const text =
+            name === "memory_context" && args.verbose !== true
+              ? JSON.stringify(output)
+              : JSON.stringify(output, null, 2);
           return rpcResult(id, {
             content: [
               {
                 type: "text",
-                text: JSON.stringify(output, null, 2),
+                text,
               },
             ],
             isError: false,
@@ -688,8 +761,12 @@ export function createMemoryMcpHandler(params: {
   };
 }
 
-function compactToolResult(name: string, result: unknown): unknown {
-  if (name !== "memory_context") {
+function compactToolResult(
+  name: string,
+  result: unknown,
+  args: Record<string, unknown>,
+): unknown {
+  if (name !== "memory_context" || args.verbose === true) {
     return result;
   }
   const recall = asRecord(result);
@@ -697,12 +774,10 @@ function compactToolResult(name: string, result: unknown): unknown {
     return result;
   }
   return compactRecord({
-    ...recall,
+    query: typeof recall.query === "string" ? clampText(recall.query, 1_200) : recall.query,
+    injectedContext: recall.injectedContext,
     hits: Array.isArray(recall.hits)
       ? recall.hits.map((hit) => compactSearchHit(hit))
-      : undefined,
-    evidence: Array.isArray(recall.evidence)
-      ? recall.evidence.map((evidence) => compactEvidence(evidence))
       : undefined,
   });
 }
@@ -714,23 +789,15 @@ function compactSearchHit(value: unknown): unknown {
   }
   const record = asRecord(hit.record);
   return compactRecord({
-    ...hit,
-    record: record
-      ? compactRecord({
-          id: record.id,
-          scope: record.scope,
-          kind: record.kind,
-          summary: record.summary,
-          source: record.source,
-          tags: record.tags,
-          metadata: compactMetadata(record.metadata),
-          createdAt: record.createdAt,
-          updatedAt: record.updatedAt,
-        })
+    id: record?.id ?? hit.id,
+    scope: record?.scope ?? hit.scope,
+    kind: record?.kind ?? hit.kind,
+    summary: typeof (record?.summary ?? hit.summary) === "string"
+      ? clampText(String(record?.summary ?? hit.summary), 220)
       : undefined,
-    evidence: Array.isArray(hit.evidence)
-      ? hit.evidence.map((evidence) => compactEvidence(evidence))
-      : compactEvidence(hit.evidence),
+    source: record?.source ?? hit.source,
+    score: hit.score,
+    snippet: typeof hit.snippet === "string" ? clampText(hit.snippet, 240) : undefined,
   });
 }
 
@@ -790,6 +857,35 @@ type SessionCommitDurableMemory = {
 
 type ActiveDocumentKind = "context" | "experience";
 
+type MaintenanceRecordAction =
+  | {
+      action: "update";
+      id: string;
+      scope: MemoryScope;
+      content: string;
+      summary?: string;
+      reason?: string;
+    }
+  | {
+      action: "supersede";
+      id: string;
+      winnerId: string;
+      scope: MemoryScope;
+      reason?: string;
+    }
+  | {
+      action: "softDelete";
+      id: string;
+      scope: MemoryScope;
+      reason?: string;
+    }
+  | {
+      action: "restore";
+      id: string;
+      scope: MemoryScope;
+      reason?: string;
+    };
+
 async function writeActiveDocument(input: {
   memory: MarvMem;
   kind: ActiveDocumentKind;
@@ -810,31 +906,87 @@ async function writeActiveDocument(input: {
   });
 }
 
+async function applyMaintenanceRecordAction(
+  memory: MarvMem,
+  action: MaintenanceRecordAction,
+  governance: { agent: string; nowIso: string },
+) {
+  const existing = await memory.get(action.id, { includeDeleted: true });
+  if (!existing || !sameScope(existing.scope, action.scope)) {
+    return { action: action.action, id: action.id, applied: false, reason: "record_not_found_or_scope_mismatch" };
+  }
+  if (action.action === "update") {
+    const record = await memory.update(action.id, {
+      content: action.content,
+      summary: action.summary,
+      metadata: compactRecord({
+        ...(existing.metadata ?? {}),
+        lastGovernedAt: governance.nowIso,
+        lastGovernedBy: governance.agent,
+        governanceReason: action.reason,
+      }),
+    });
+    return { action: action.action, id: action.id, applied: record !== null, record };
+  }
+  if (action.action === "softDelete") {
+    const applied = await memory.forget(action.id, {
+      deletedBy: `maintenance:${governance.agent}`,
+      reason: action.reason,
+    });
+    return { action: action.action, id: action.id, applied };
+  }
+  if (action.action === "restore") {
+    const record = await memory.restore(action.id);
+    return { action: action.action, id: action.id, applied: record !== null, record };
+  }
+  const winner = await memory.get(action.winnerId);
+  if (!winner) {
+    return { action: action.action, id: action.id, applied: false, reason: "winner_not_found" };
+  }
+  await memory.update(action.id, {
+    metadata: compactRecord({
+      ...(existing.metadata ?? {}),
+      lastGovernedAt: governance.nowIso,
+      lastGovernedBy: governance.agent,
+      governanceReason: action.reason,
+    }),
+  });
+  const applied = await memory.supersede(action.id, action.winnerId);
+  return { action: action.action, id: action.id, winnerId: action.winnerId, applied };
+}
+
 async function buildMaintenanceRequestIfDue(
   memory: MarvMem,
   scope: MemoryScope,
   nowIso: string,
 ) {
-  const [context, experience] = await Promise.all([
+  const [context, experience, conflicts] = await Promise.all([
     memory.active.read("context", scope),
     memory.active.read("experience", scope),
+    findCrossScopeConflictCandidates(memory, scope),
   ]);
-  if (!isMaintenanceDue([context?.metadata, experience?.metadata], nowIso)) {
+  if (
+    !isMaintenanceDue([context?.metadata, experience?.metadata], nowIso) &&
+    !conflicts.some((candidate) => candidate.similarity >= 0.65)
+  ) {
     return undefined;
   }
-  return await buildMaintenanceRequest(memory, scope, nowIso);
+  return await buildMaintenanceRequest(memory, scope, nowIso, conflicts);
 }
 
 async function buildMaintenanceRequest(
   memory: MarvMem,
   scope: MemoryScope,
   nowIso: string,
+  providedConflicts?: Awaited<ReturnType<typeof findCrossScopeConflictCandidates>>,
 ) {
-  const [context, experience, records] = await Promise.all([
+  const [context, experience, listedRecords] = await Promise.all([
     memory.active.read("context", scope),
     memory.active.read("experience", scope),
-    memory.list({ scopes: [scope], limit: 12 }),
+    memory.list({ scopes: [scope], limit: 36 }),
   ]);
+  const records = listedRecords.filter((record) => !isSessionPalaceRecord(record)).slice(0, 12);
+  const conflictCandidates = providedConflicts ?? await findCrossScopeConflictCandidates(memory, scope);
   return {
     kind: "active_memory_maintenance",
     scope,
@@ -848,15 +1000,90 @@ async function buildMaintenanceRequest(
       summary: record.summary,
       source: record.source,
       tags: record.tags,
-      metadata: record.metadata,
+      metadata: compactMetadata(record.metadata),
       updatedAt: record.updatedAt,
     })),
+    conflictCandidates,
     instructions: [
       "Use the host LLM to lightly deduplicate, decay stale details, and correct active memory against durable palace records.",
+      "Review conflictCandidates across scopes; apply explicit update, supersede, softDelete, or restore recordActions when evidence is sufficient.",
       "Keep activeContext compact and current; keep activeExperience as reusable lessons only.",
-      "Return memory_maintenance.apply with activeContext, activeExperience, and a short governanceReport.",
+      "Return memory_maintenance.apply with recordActions, activeContext, activeExperience, and a short governanceReport.",
     ],
   };
+}
+
+async function findCrossScopeConflictCandidates(memory: MarvMem, scope: MemoryScope) {
+  const records = (await memory.list({ scopes: [scope], limit: 8 }))
+    .filter((record) => !isSessionPalaceRecord(record))
+    .filter((record) => isComparableMemoryKind(record.kind));
+  const pairs = [];
+  const seen = new Set<string>();
+  for (const left of records) {
+    const hits = await memory.search(left.summary ?? left.content, {
+      maxResults: 8,
+      minScore: 0.4,
+    });
+    for (const hit of hits) {
+      const right = hit.record;
+      if (
+        right.id === left.id ||
+        sameScope(left.scope, right.scope) ||
+        isSessionPalaceRecord(right) ||
+        !areComparableMemoryKinds(left.kind, right.kind) ||
+        right.content.trim() === left.content.trim()
+      ) {
+        continue;
+      }
+      const key = [left.id, right.id].sort().join(":");
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      pairs.push({
+        left: compactPalaceRecord(left),
+        right: compactPalaceRecord(right),
+        similarity: hit.score,
+        reasons: [
+          "cross_scope",
+          left.kind === right.kind ? "same_kind" : "comparable_fact_kind",
+        ],
+      });
+      if (pairs.length >= 6) {
+        return pairs;
+      }
+    }
+  }
+  return pairs;
+}
+
+function compactPalaceRecord(record: MemoryRecord) {
+  return {
+    id: record.id,
+    scope: record.scope,
+    kind: record.kind,
+    content: clampText(record.content, 500),
+    summary: record.summary,
+    source: record.source,
+    tags: record.tags,
+    updatedAt: record.updatedAt,
+  };
+}
+
+function isSessionPalaceRecord(record: MemoryRecord): boolean {
+  return record.kind === "note" && (record.tags.includes("session") || record.source.includes("_session_"));
+}
+
+function isComparableMemoryKind(kind: string): boolean {
+  return ["fact", "decision", "identity", "preference", "lesson", "repo_fact"].includes(kind);
+}
+
+function areComparableMemoryKinds(left: string, right: string): boolean {
+  if (left === right) {
+    return true;
+  }
+  const factKinds = new Set(["fact", "identity", "repo_fact"]);
+  return factKinds.has(left) && factKinds.has(right);
 }
 
 function isMaintenanceDue(metadataList: Array<unknown>, nowIso: string): boolean {
@@ -875,17 +1102,7 @@ async function findSessionMemoryRecord(
   sessionId: string,
   taskId: string,
 ): Promise<MemoryRecord | null> {
-  const records = await memory.list({ scopes: [scope] });
-  return (
-    records.find((record) => {
-      const metadata = asRecord(record.metadata) ?? {};
-      return (
-        optionalString(metadata.sessionId) === sessionId &&
-        optionalString(metadata.taskId) === taskId &&
-        (record.tags.includes("session") || record.source.includes("_session_"))
-      );
-    }) ?? null
-  );
+  return await memory.findSessionRecord(scope, sessionId, taskId);
 }
 
 function parseSessionCommitEntries(value: unknown): SessionCommitEntry[] {
@@ -953,6 +1170,53 @@ function parseDurableMemories(value: unknown): SessionCommitDurableMemory[] {
   });
 }
 
+function parseMaintenanceRecordActions(value: unknown): MaintenanceRecordAction[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("recordActions must be an array");
+  }
+  return value.map((entry, index) => {
+    const record = asRecord(entry);
+    if (!record) {
+      throw new Error(`recordActions[${index}] must be an object`);
+    }
+    const action = expectString(record.action, `recordActions[${index}].action`);
+    const scope = {
+      type: parseMemoryScopeType(
+        expectString(record.scopeType, `recordActions[${index}].scopeType`),
+        `recordActions[${index}].scopeType`,
+      ),
+      id: expectString(record.scopeId, `recordActions[${index}].scopeId`),
+    };
+    const base = {
+      id: expectString(record.id, `recordActions[${index}].id`),
+      scope,
+      reason: optionalString(record.reason),
+    };
+    if (action === "update") {
+      return {
+        ...base,
+        action,
+        content: expectString(record.content, `recordActions[${index}].content`),
+        summary: optionalString(record.summary),
+      };
+    }
+    if (action === "supersede") {
+      return {
+        ...base,
+        action,
+        winnerId: expectString(record.winnerId, `recordActions[${index}].winnerId`),
+      };
+    }
+    if (action === "softDelete" || action === "restore") {
+      return { ...base, action };
+    }
+    throw new Error(`recordActions[${index}].action must be update, supersede, softDelete, or restore`);
+  });
+}
+
 function buildSessionCommitContent(input: {
   agent: string;
   sessionId: string;
@@ -990,6 +1254,13 @@ function requireScope(args: Record<string, unknown>, fallback?: MemoryScope[]): 
   return scope;
 }
 
+function resolveDefaultScopes(params: {
+  defaultScopes?: MemoryScope[];
+  getDefaultScopes?: () => MemoryScope[] | undefined;
+}): MemoryScope[] | undefined {
+  return params.getDefaultScopes?.() ?? params.defaultScopes;
+}
+
 function requireDestructiveScope(args: Record<string, unknown>, fallback?: MemoryScope[]): MemoryScope {
   const requested = parseReadScopeArgs(args)?.[0];
   const defaultScope = fallback?.[0];
@@ -998,7 +1269,7 @@ function requireDestructiveScope(args: Record<string, unknown>, fallback?: Memor
   }
   const scope = requested ?? defaultScope;
   if (!scope) {
-    throw new Error("scopeType and scopeId are required for update/delete when no default scope is configured");
+    throw new Error("scopeType and scopeId are required for update/delete/restore when no default scope is configured");
   }
   return scope;
 }
@@ -1035,6 +1306,29 @@ function expectString(value: unknown, label: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeClientAgentId(name: string): string | undefined {
+  const normalized = name.toLowerCase().trim();
+  const aliases: Array<[RegExp, string]> = [
+    [/\bcodex\b/u, "codex"],
+    [/\bclaude\b/u, "claude"],
+    [/\bcursor\b/u, "cursor"],
+    [/\bworkbuddy\b/u, "workbuddy"],
+    [/\b(?:github\s+)?copilot\b/u, "copilot"],
+    [/\bantigravity\b/u, "antigravity"],
+    [/\btrae\b/u, "trae"],
+  ];
+  for (const [pattern, id] of aliases) {
+    if (pattern.test(normalized)) {
+      return id;
+    }
+  }
+  const slug = normalized
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 64);
+  return slug || undefined;
 }
 
 function expectNumber(value: unknown): number | undefined {

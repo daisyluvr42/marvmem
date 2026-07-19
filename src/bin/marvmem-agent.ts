@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { readdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -23,6 +24,7 @@ import { defaultMemoryMcpStoragePath } from "../mcp/stdio.js";
 import { MarvMemPlatformService } from "../platform/service.js";
 import { ProjectStore } from "../auth/project.js";
 import { startAgentImportScheduler } from "../agents/import-scheduler.js";
+import { runMemoryReliabilityMigration } from "../system/migration.js";
 import {
   ensureAgentServiceConfig,
   getAgentServiceStatus,
@@ -41,7 +43,8 @@ Install MarvMem globally for coding agents, or launch the local setup UI.
 
 Usage:
   marvmem-agent install <codex|claude|cursor|copilot|antigravity|workbuddy|trae|all>
-  marvmem-agent update <codex|claude|cursor|copilot|antigravity|workbuddy|trae|all>
+  marvmem-agent update [<codex|claude|cursor|copilot|antigravity|workbuddy|trae|all>]
+  marvmem-agent migrate [--storage-path <path>]
   marvmem-agent service <install|start|stop|restart|status|uninstall|url>
   marvmem-agent serve
   marvmem-agent ui
@@ -79,6 +82,7 @@ async function main(): Promise<void> {
     }
     const service = agents.length === AGENT_IDS.length && !skipService ? await installAgentService(serviceOptions) : undefined;
     process.stdout.write(`${JSON.stringify({ storagePath: options.storagePath, service, results }, null, 2)}\n`);
+    printEmbeddingStatus();
     return;
   }
 
@@ -89,6 +93,16 @@ async function main(): Promise<void> {
 
   if (argv[0] === "service") {
     await runService(parseServiceArgs(argv.slice(1)));
+    return;
+  }
+
+  if (argv[0] === "migrate") {
+    const storagePath = parseMigrationArgs(argv.slice(1));
+    const result = await runMemoryReliabilityMigration(storagePath);
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    if (result.backupPath) {
+      process.stdout.write(`Pre-migration backup retained at ${result.backupPath}\n`);
+    }
     return;
   }
 
@@ -107,7 +121,24 @@ async function main(): Promise<void> {
     return;
   }
 
-  throw new Error("Expected command: install, update, service, serve, ui, or tui");
+  throw new Error("Expected command: install, update, migrate, service, serve, ui, or tui");
+}
+
+function parseMigrationArgs(argv: string[]): string {
+  let storagePath = defaultMemoryMcpStoragePath();
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--storage-path") {
+      storagePath = readFlagValue(argv, ++index, arg);
+      continue;
+    }
+    if (arg === "--help") {
+      process.stdout.write(`${HELP}\n`);
+      process.exit(0);
+    }
+    throw new Error(`Unknown argument: ${arg}`);
+  }
+  return storagePath;
 }
 
 function parseInstallArgs(argv: string[]) {
@@ -136,11 +167,12 @@ function parseInstallArgs(argv: string[]) {
 }
 
 async function runUpdate(argv: string[]): Promise<void> {
-  parseInstallArgs(argv);
+  const installArgv = argv.length === 0 || argv[0]?.startsWith("--") ? ["all", ...argv] : argv;
+  parseInstallArgs(installArgv);
   await runCommand("git", ["pull", "--ff-only"]);
   await runCommand("npm", ["install"]);
   await runCommand("npm", ["run", "build"]);
-  await runCommand(process.execPath, [fileURLToPath(import.meta.url), "install", ...argv]);
+  await runCommand(process.execPath, [fileURLToPath(import.meta.url), "install", ...installArgv]);
   process.stdout.write("MarvMem code, dependencies, MCP config, instructions, and service entries are updated.\n");
   process.stdout.write(`${defaultMemoryMcpStoragePath()} was not deleted.\n`);
 }
@@ -564,6 +596,7 @@ async function runTui(input: {
 
 async function renderTuiStatus(options: ReturnType<typeof resolveAgentOptions>): Promise<string> {
   const statuses = await getAgentStatuses(options);
+  const backupStatus = await migrationBackupStatus(options.storagePath);
   const rows = statuses.map((status, index) => [
     String(index + 1),
     status.label,
@@ -576,6 +609,7 @@ async function renderTuiStatus(options: ReturnType<typeof resolveAgentOptions>):
   return [
     "MarvMem Agent TUI",
     `Storage: ${options.storagePath}`,
+    backupStatus,
     `MCP:     ${options.mcpPath}`,
     "",
     formatTable([
@@ -584,6 +618,40 @@ async function renderTuiStatus(options: ReturnType<typeof resolveAgentOptions>):
     ]),
     "",
   ].join("\n");
+}
+
+function printEmbeddingStatus(): void {
+  const provider = process.env.MARVMEM_EMBEDDINGS_PROVIDER?.trim();
+  if (provider) {
+    process.stderr.write(`Retrieval embeddings: ${provider}\n`);
+    return;
+  }
+  process.stderr.write(
+    "Retrieval embeddings: builtin hash mode (not cross-language semantic). " +
+      "Set MARVMEM_EMBEDDINGS_PROVIDER=openai|gemini|voyage|script for semantic recall.\n",
+  );
+}
+
+async function migrationBackupStatus(storagePath: string): Promise<string> {
+  try {
+    const directory = dirname(storagePath);
+    const prefix = `${storagePath.split("/").at(-1)}.pre-`;
+    const entries = (await readdir(directory, { withFileTypes: true }))
+      .filter((entry) => entry.isFile() && entry.name.startsWith(prefix) && entry.name.endsWith(".bak"));
+    if (entries.length === 0) {
+      return "Backup:  none";
+    }
+    const backups = await Promise.all(entries.map(async (entry) => ({
+      path: join(directory, entry.name),
+      modifiedAt: (await stat(join(directory, entry.name))).mtimeMs,
+    })));
+    const newest = backups.toSorted((left, right) => right.modifiedAt - left.modifiedAt)[0]!;
+    const ageDays = Math.floor(Math.max(0, Date.now() - newest.modifiedAt) / 86_400_000);
+    const reminder = ageDays >= 30 ? " — confirm deletion if no longer needed" : "";
+    return `Backup:  ${newest.path} (${ageDays}d old)${reminder}`;
+  } catch {
+    return "Backup:  none";
+  }
 }
 
 function formatTable(rows: string[][]): string {

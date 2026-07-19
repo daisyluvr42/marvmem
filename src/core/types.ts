@@ -31,6 +31,10 @@ export type MemoryRecord = {
   metadata?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+  deletedAt?: string;
+  deletedBy?: string;
+  deleteReason?: string;
+  supersededBy?: string;
 };
 
 export type MemoryInput = {
@@ -105,6 +109,18 @@ export type MemoryRecallResult = {
 export type MemoryListOptions = {
   scopes?: MemoryScope[];
   limit?: number;
+  includeDeleted?: boolean;
+  includeDocuments?: boolean;
+};
+
+export type MemoryGetOptions = {
+  includeDeleted?: boolean;
+  includeDocuments?: boolean;
+};
+
+export type MemoryStoreSearchOptions = {
+  scopes?: MemoryScope[];
+  limit: number;
 };
 
 export interface MemoryStore {
@@ -112,6 +128,15 @@ export interface MemoryStore {
   save(records: MemoryRecord[]): Promise<void>;
   upsert?(record: MemoryRecord): Promise<void>;
   delete?(id: string): Promise<void>;
+  get?(id: string, options?: MemoryGetOptions): Promise<MemoryRecord | null>;
+  getMany?(ids: string[]): Promise<MemoryRecord[]>;
+  list?(options?: MemoryListOptions): Promise<MemoryRecord[]>;
+  findDedupeCandidates?(scope: MemoryScope, kind: MemoryKind, limit?: number): Promise<MemoryRecord[]>;
+  findSessionRecord?(scope: MemoryScope, sessionId: string, taskId?: string): Promise<MemoryRecord | null>;
+  searchCandidates?(query: string, options: MemoryStoreSearchOptions): Promise<MemoryRecord[]>;
+  softDelete?(id: string, input: { deletedAt: string; deletedBy?: string; reason?: string }): Promise<boolean>;
+  restore?(id: string, updatedAt: string): Promise<MemoryRecord | null>;
+  supersede?(id: string, winnerId: string, updatedAt: string): Promise<boolean>;
 }
 
 export function normalizeScope(scope: MemoryScope): MemoryScope {

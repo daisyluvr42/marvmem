@@ -303,13 +303,6 @@ export class MemoryStoreLocalSyncStore implements LocalSyncStore {
     let processed = 0;
     for (const remote of records) {
       const index = local.findIndex((record) => record.id === remote.id);
-      if (remote.deletedAt) {
-        if (index >= 0) {
-          local.splice(index, 1);
-          processed++;
-        }
-        continue;
-      }
       const next = fromCloudRecord(remote);
       if (index === -1) {
         local.push(next);
@@ -359,7 +352,10 @@ function toCloudRecord(record: MemoryRecord, projectId: string): CloudMemoryReco
     metadata: record.metadata,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
-    deletedAt: null,
+    deletedAt: record.deletedAt ?? null,
+    deletedBy: record.deletedBy ?? null,
+    deleteReason: record.deleteReason ?? null,
+    supersededBy: record.supersededBy ?? null,
     syncVersion: readSyncVersion(record),
   };
 }
@@ -381,6 +377,10 @@ function fromCloudRecord(record: CloudMemoryRecord): MemoryRecord {
     metadata: { ...(record.metadata ?? {}), projectId: record.projectId, syncVersion: record.syncVersion },
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    deletedAt: record.deletedAt ?? undefined,
+    deletedBy: record.deletedBy ?? undefined,
+    deleteReason: record.deleteReason ?? undefined,
+    supersededBy: record.supersededBy ?? undefined,
   };
 }
 

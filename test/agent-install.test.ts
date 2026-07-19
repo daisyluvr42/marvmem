@@ -131,17 +131,49 @@ RAW_JSON_END -->
     assert.equal(config.mcpServers.marvmem.env.MARVMEM_SCOPE_ID, "workbuddy");
     assert.equal(config.mcpServers.marvmem.env.MARVMEM_WORKBUDDY_HOME, join(root, ".workbuddy"));
 
+    const soulProjection = await readFile(join(root, ".workbuddy", "SOUL.md"), "utf8");
+    assert.match(soulProjection, /WorkBuddy speaks calmly/);
+    assert.equal(soulProjection.match(/marvmem-agent-instructions:start/g)?.length, 1);
+    assert.match(soulProjection, /memory_context/);
+    assert.match(soulProjection, /Internal recall requirement/);
+    assert.match(soulProjection, /Do this silently/);
+    assert.doesNotMatch(soulProjection, /Trigger words include/);
+    assert.match(soulProjection, /memory_session/);
+    assert.match(soulProjection, /agent:workbuddy/);
+    assert.match(soulProjection, /update all/);
+
     const memoryProjection = await readFile(join(root, ".workbuddy", "MEMORY.md"), "utf8");
     assert.match(memoryProjection, /Existing WorkBuddy memory/);
-    assert.equal(memoryProjection.match(/marvmem-agent-instructions:start/g)?.length, 1);
-    assert.match(memoryProjection, /memory_context/);
-    assert.match(memoryProjection, /Internal recall requirement/);
-    assert.match(memoryProjection, /Do this silently/);
-    assert.doesNotMatch(memoryProjection, /Trigger words include/);
-    assert.match(memoryProjection, /memory_session/);
-    assert.match(memoryProjection, /agent:workbuddy/);
-    assert.match(memoryProjection, /update workbuddy/);
     assert.match(memoryProjection, /WorkBuddy native memory profile v2/);
+    assert.doesNotMatch(memoryProjection, /marvmem-agent-instructions:start/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("WorkBuddy takeover still runs when session import is skipped", async () => {
+  const root = await mkdtemp(join(tmpdir(), "marvmem-agent-workbuddy-skip-import-"));
+  const storagePath = join(root, "memory.sqlite");
+  const mcpPath = join(root, "marvmem-mcp.js");
+
+  try {
+    await mkdir(join(root, ".workbuddy"), { recursive: true });
+    await writeFile(join(root, ".workbuddy", "SOUL.md"), "# Voice\n\n- WorkBuddy speaks calmly.\n", "utf8");
+    await writeFile(join(root, ".workbuddy", "USER.md"), "# User\n\n- Prefers direct answers.\n", "utf8");
+    await writeFile(join(root, ".workbuddy", "MEMORY.md"), "# Memory\n\n- Existing WorkBuddy memory.\n", "utf8");
+
+    const output = await runInstaller("workbuddy", root, storagePath, mcpPath, "--skip-import");
+    const parsed = JSON.parse(output);
+    assert.equal(parsed.results[0].import, "imported");
+    assert.equal(parsed.results[0].importSummary.imported, 3);
+
+    for (const file of ["SOUL.md", "USER.md", "MEMORY.md"]) {
+      const content = await readFile(join(root, ".workbuddy", file), "utf8");
+      assert.match(content, /marvmem-projection:start/);
+    }
+    assert.match(await readFile(join(root, ".workbuddy", "SOUL.md"), "utf8"), /WorkBuddy speaks calmly/);
+    assert.match(await readFile(join(root, ".workbuddy", "USER.md"), "utf8"), /Prefers direct answers/);
+    assert.match(await readFile(join(root, ".workbuddy", "MEMORY.md"), "utf8"), /Existing WorkBuddy memory/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

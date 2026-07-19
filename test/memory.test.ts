@@ -5,7 +5,8 @@ import { once } from "node:events";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMarvMem, InMemoryStore } from "../src/core/index.js";
+import { DatabaseSync } from "node:sqlite";
+import { createMarvMem, InMemoryStore, SqliteMemoryStore } from "../src/core/index.js";
 import { InMemoryVectorStore } from "../src/retrieval/vector-memory.js";
 import { InMemoryEntityStore } from "../src/entity/store-memory.js";
 
@@ -137,6 +138,47 @@ test("deduplicates similar memories instead of creating duplicates", async () =>
   });
   const all = await memory.list({ scopes: [{ type: "user", id: "alice" }] });
   assert.equal(all.length, 1);
+});
+
+test("session identity prevents similar sessions from merging and bounds metadata", async () => {
+  const memory = createMarvMem({ store: new InMemoryStore() });
+  for (let index = 0; index < 40; index += 1) {
+    await memory.remember({
+      scope: { type: "agent", id: "codex" },
+      kind: "note",
+      content: `Session one summary revision ${index}.`,
+      source: "codex_session_import",
+      tags: ["codex", "session"],
+      metadata: {
+        sessionId: "session-1",
+        taskId: "codex:session-1",
+        messageCount: index,
+        markerHistory: Array.from({ length: 50 }, (_, marker) => ({
+          source: "codex",
+          metadata: { transcript: "x".repeat(2_000), marker },
+        })),
+      },
+    });
+  }
+  await memory.remember({
+    scope: { type: "agent", id: "codex" },
+    kind: "note",
+    content: "Session two has a similar summary.",
+    source: "codex_session_import",
+    tags: ["codex", "session"],
+    metadata: {
+      sessionId: "session-2",
+      taskId: "codex:session-2",
+    },
+  });
+
+  const records = await memory.list({ scopes: [{ type: "agent", id: "codex" }] });
+  assert.equal(records.length, 2);
+  const first = records.find((record) => record.metadata?.sessionId === "session-1");
+  assert.ok(first);
+  assert.equal(JSON.stringify(first.metadata).length <= 8_192, true);
+  assert.equal(Array.isArray(first.metadata?.markerHistory), true);
+  assert.equal((first.metadata?.markerHistory as unknown[]).length <= 8, true);
 });
 
 test("sqlite stores concurrent writes from separate instances without clobbering", async () => {
@@ -272,7 +314,7 @@ test("update modifies an existing record", async () => {
   assert.match(fetched!.content, /Chinese/);
 });
 
-test("forget deletes a record", async () => {
+test("forget soft-deletes and restore makes a record visible again", async () => {
   const memory = createMarvMem({ store: new InMemoryStore() });
 
   const record = await memory.remember({
@@ -286,9 +328,72 @@ test("forget deletes a record", async () => {
 
   const fetched = await memory.get(record.id);
   assert.equal(fetched, null);
+  const tombstone = await memory.get(record.id, { includeDeleted: true });
+  assert.equal(typeof tombstone?.deletedAt, "string");
 
   const deletedAgain = await memory.forget(record.id);
   assert.equal(deletedAgain, false);
+  const restored = await memory.restore(record.id);
+  assert.equal(restored?.id, record.id);
+  assert.equal((await memory.get(record.id))?.content, "Temporary fact.");
+});
+
+test("sqlite save round-trip preserves tombstones and excludes hidden records from FTS", async () => {
+  const root = await mkdtemp(join(tmpdir(), "marvmem-roundtrip-"));
+  const path = join(root, "memory.sqlite");
+  const store = new SqliteMemoryStore(path);
+  const record = {
+    id: "deleted-record",
+    scope: { type: "repo" as const, id: "marvmem" },
+    kind: "fact",
+    content: "This record must remain deleted after cloud-style save.",
+    summary: "Deleted record",
+    confidence: 0.8,
+    importance: 0.7,
+    source: "test",
+    tags: ["deleted"],
+    metadata: { projectId: "p1" },
+    createdAt: "2026-07-19T00:00:00.000Z",
+    updatedAt: "2026-07-19T01:00:00.000Z",
+    deletedAt: "2026-07-19T01:00:00.000Z",
+    deletedBy: "test",
+    deleteReason: "round-trip",
+    supersededBy: "winner",
+  };
+  await store.save([record]);
+  await store.save(await store.load());
+
+  const loaded = (await store.load())[0];
+  assert.equal(loaded?.deletedAt, record.deletedAt);
+  assert.equal(loaded?.deletedBy, "test");
+  assert.equal(loaded?.deleteReason, "round-trip");
+  assert.equal(loaded?.supersededBy, "winner");
+  using db = new DatabaseSync(path);
+  const fts = db.prepare("SELECT COUNT(*) AS count FROM memory_items_fts").get() as { count: number };
+  assert.equal(Number(fts.count), 0);
+});
+
+test("sqlite FTS search escapes special syntax and filters workbuddy documents", async () => {
+  const root = await mkdtemp(join(tmpdir(), "marvmem-fts-"));
+  const path = join(root, "memory.sqlite");
+  const memory = createMarvMem({ storage: { backend: "sqlite", path } });
+  await memory.remember({
+    scope: { type: "repo", id: "marvmem" },
+    kind: "fact",
+    content: "Use NEAR-safe release tags such as alpha-beta * without exposing FTS syntax.",
+    source: "manual",
+  });
+  await memory.remember({
+    scope: { type: "agent", id: "workbuddy" },
+    kind: "identity",
+    content: "SOUL.md full document anchor should not consume recall.",
+    source: "workbuddy_document",
+    metadata: { projectionDocument: true, projectionTarget: "soul" },
+  }, { dedupe: false });
+
+  const hits = await memory.search('NEAR alpha-beta * "release"', { minScore: 0 });
+  assert.equal(hits.some((hit) => hit.record.source === "manual"), true);
+  assert.equal(hits.some((hit) => hit.record.source === "workbuddy_document"), false);
 });
 
 test("search returns hash-based reasons (not semantic)", async () => {

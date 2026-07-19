@@ -199,12 +199,12 @@ For custom hosts, `createMemoryMcpHandler()` exposes JSON-RPC 2.0 tools.
 
 | Tool | Description |
 |------|-------------|
-| `memory_record` | Search, fetch, list, write, update, or delete long-term memory records |
+| `memory_record` | Search, fetch, list, write, update, soft-delete, or restore long-term memory records |
 | `memory_context` | Build prompt-ready recall or run the retrieval stack |
 | `memory_active` | Read or distill active context and experience |
 | `memory_session` | Commit host-distilled session summaries |
 | `memory_task` | Append task entries or build task context windows |
-| `memory_maintenance` | Run experience calibration or rebuild active experience |
+| `memory_maintenance` | Run experience calibration, rebuild active experience, or apply explicit record governance actions |
 
 ```ts
 import { createMemoryMcpHandler } from "marvmem/mcp";
@@ -213,11 +213,21 @@ const handler = createMemoryMcpHandler({ memory });
 const response = await handler.handleRequest(jsonRpcPayload);
 ```
 
+`memory_context` returns compact `injectedContext` plus concise hits by default. Pass `verbose: true` for full layers, evidence, and record metadata. A configured scope takes precedence; otherwise MCP initialization derives a default `agent:<clientInfo.name>` write scope while unscoped recall remains global.
+
+Deletes are soft. Use `memory_record` with `action: "get"` and `includeDeleted: true` to inspect tombstones, then `action: "restore"` to restore one.
+
 Local stdio server:
 
 ```bash
 npm run build
 node dist/bin/marvmem-mcp.js
+```
+
+For an existing database with oversized session metadata, stop every process connected to it and run the one-time offline migration:
+
+```bash
+node dist/bin/marvmem-agent.js migrate --storage-path "$HOME/.marvmem/memory.sqlite"
 ```
 
 Useful environment variables:

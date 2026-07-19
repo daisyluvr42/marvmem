@@ -43,6 +43,10 @@ export class ActiveMemoryManager {
     return await this.options.store.delete("context", normalizeScope(scope));
   }
 
+  async recentScopes(limit = 3): Promise<MemoryScope[]> {
+    return await this.options.store.listRecentScopes(limit);
+  }
+
   async distillContext(input: {
     scope: MemoryScope;
     sessionSummary: string;

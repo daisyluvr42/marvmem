@@ -54,7 +54,7 @@ flowchart LR
   Merge --> Prompt["injectedContext"]
 ```
 
-The recall result can expose both prompt-ready text and structured hits. MCP `memory_context` with `action: "recall"` keeps the full `hits[].record`, including `source`, `tags`, and `metadata`.
+The recall result can expose both prompt-ready text and structured hits. MCP `memory_context` with `action: "recall"` returns compact hits by default; `verbose: true` exposes full layers, evidence, and record metadata for diagnostics.
 
 ## Turn Capture Flow
 
@@ -75,7 +75,7 @@ Default local MCP storage path: `~/.marvmem/memory.sqlite`
 
 | Table | Purpose |
 |-------|---------|
-| `memory_items` | Palace records with scope, kind, content, summary, confidence, importance, source, tags, metadata, timestamps |
+| `memory_items` | Palace records with scope, content, compact metadata, timestamps, soft-delete provenance, and supersede relationships |
 | `memory_items_fts` | FTS5 full-text index for palace records |
 | `active_documents` | Active `context` and `experience` documents by scope |
 | `task_context` | Task metadata |
@@ -86,7 +86,7 @@ Default local MCP storage path: `~/.marvmem/memory.sqlite`
 | `entity_links` | Entity to memory links |
 | `entity_relations` | Entity graph edges |
 
-The schema is created automatically on first connection. SQLite runs with WAL mode and foreign keys enabled.
+The schema is created automatically on first connection. SQLite runs with WAL mode and foreign keys enabled. Oversized legacy metadata is handled by the offline `marvmem-agent migrate` command, which creates a timestamped backup before compaction and FTS rebuild.
 
 ## Scope Model
 
@@ -102,7 +102,9 @@ For project-aware platform usage, repo scope is project-qualified internally. Fo
 
 ## Storage Boundaries
 
-- Builtin palace search loads scoped records into memory for scoring. It is intended for small to medium local stores.
-- Larger collections should use the retrieval stack with remote embeddings or QMD.
+- Builtin palace search uses FTS5 and SQL to select visible candidates, scores only that bounded set in JavaScript, and lazily loads metadata for final hits.
+- Deleted, superseded, and `workbuddy_document` anchor records are excluded at both FTS write and query time.
+- Builtin hash embeddings are deterministic but not cross-language semantic embeddings; remote embeddings remain an explicit opt-in rerank layer.
 - Active memory is stored in SQLite. Markdown bridge adapters mirror durable memory files for host compatibility.
+- Unscoped recall can aggregate the three most recently active scopes within the final character budget.
 - Generic adapters stay thin. Host-specific wrappers should reuse the host's model/provider/auth where possible.

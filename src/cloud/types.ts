@@ -149,6 +149,9 @@ export type CloudMemoryRecord = {
   createdAt: string;
   updatedAt: string;
   deletedAt?: string | null;
+  deletedBy?: string | null;
+  deleteReason?: string | null;
+  supersededBy?: string | null;
   syncVersion: number;
 };
 

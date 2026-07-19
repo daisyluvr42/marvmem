@@ -487,18 +487,22 @@ MCP handler 提供了 6 个聚合工具：
 
 | 工具 | 功能 |
 |------|------|
-| `memory_record` | `action: "search" / "get" / "list" / "write" / "update" / "delete"`，管理长期记忆记录 |
+| `memory_record` | `action: "search" / "get" / "list" / "write" / "update" / "delete" / "restore"`，管理长期记忆记录 |
 | `memory_context` | `action: "recall" / "retrieve"`，生成 prompt-ready 召回文本或执行 retrieval stack |
 | `memory_active` | `action: "get" / "distill"`，读取或压缩 active context / experience |
 | `memory_session` | `action: "commit"`，提交宿主 agent 已经 distill 好的 session summary |
 | `memory_task` | `action: "append" / "window"`，追加 task entry 或生成 task prompt 窗口 |
-| `memory_maintenance` | `action: "calibrate" / "rebuild"`，执行 experience 校准或重建 |
+| `memory_maintenance` | `action: "calibrate" / "rebuild" / "apply"`，执行 experience 校准、重建或应用跨 scope 记忆治理动作 |
 
 `memory_session` 的 `action: "commit"` 是 Codex、Claude Code、Cursor、Copilot、Antigravity 这类宿主 agent 的推荐 session-flush 路径：宿主 agent 先用自己的当前模型生成 `rollingSummary` 和可选 `durableMemories`，MarvMem 只负责追加新增 `entries`、设置 task rolling summary、更新同一条 session memory。这个工具不会调用 LLM，也不需要 MarvMem 读取宿主 agent 的 OAuth token 或订阅凭据。
 
 OpenClaw、Hermes、Marv 这类 runtime / wrapper 自己能拿到 provider key 或 runtime model config 的 agent，推荐直接把 API-backed inferencer 传给 MarvMem。OpenClaw plugin 会自动复用当前 runtime model；Hermes bridge 支持 `MARVMEM_INFERENCER` / `--inferencer`；Marv runtime 可以用 `createMarvInferencer()` 创建同一类 inferencer。
 
-`memory_record` 的 `action: "write"` / `"update"` 可以写入 `source`、`tags` 和 `metadata`。如果一条新记忆被合并到已有记录，tags 和 metadata 会合并，额外来源会保存在 `metadata.sourceHistory`，有冲突的标记会保存在 `metadata.markerHistory`。`memory_context` 的 `action: "recall"` 会在返回的 `hits[].record` 中保留完整记录，并在 prompt-ready 文本里显示每条命中的 source、tags 和 metadata 标记。
+`memory_record` 的 `action: "delete"` 是软删除，默认 search/list/recall 不再返回该记录；使用 `get` 配合 `includeDeleted: true` 可以审计，再用 `restore` 恢复。`memory_maintenance.apply` 还支持显式 `update`、`supersede`、`softDelete`、`restore` record actions，并保存治理来源。
+
+`memory_context` 默认只返回 `injectedContext` 和精简 hits，避免把同一内容重复放进多层结构。排障或控制台检查时传 `verbose: true` 才返回完整 layers、evidence 和记录 metadata。`maxChars` 约束最终 `injectedContext`。
+
+如果 MCP 配置没有显式 `MARVMEM_SCOPE_TYPE/ID`，server 会在 `initialize` 时从 `clientInfo.name` 推导 `agent:<client>` 作为默认写入 scope。无 scope recall 仍然搜索共享记忆库，并聚合最近活跃 scope 的 active memory。
 
 示例参数：
 
@@ -586,7 +590,7 @@ node dist/bin/marvmem-agent.js install workbuddy
 }
 ```
 
-安装时还会导入并接管 `~/.workbuddy/SOUL.md`、`~/.workbuddy/USER.md`、`~/.workbuddy/MEMORY.md`。接管后主要记忆存储在 MarvMem 数据库中，这三份 Markdown 文件继续留在原位置作为 WorkBuddy 的映射文件；MarvMem 同步前会先吸收文件中的直接改动，再刷新投影。
+安装时还会接管 `~/.workbuddy/SOUL.md`、`~/.workbuddy/USER.md`、`~/.workbuddy/MEMORY.md`。原有标题、段落、代码块和空行保持原样；MarvMem 只在文件尾部维护 `marvmem-projection` 区，每条托管记忆带稳定的 `marvmem-record` id。编辑托管条目会更新原记录，删除会全局软删除，新加无 id 条目会创建或恢复记录。三个原生文档锚点只用于同步，不进入默认 search/list/recall/FTS。
 
 因此在 WorkBuddy 里调用 `memory_record` 的 `action: "write"`、`memory_active` 的 `action: "distill"`、`memory_maintenance` 的 `action: "calibrate"` 这类需要 scope 的操作时，可以省略 `scopeType` / `scopeId`；MarvMem 会自动落到 `agent:workbuddy`。如果要跨工具查询共享记忆，调用 `memory_context` 的 `action: "recall"` 时仍然可以不传 scope。
 
@@ -626,12 +630,12 @@ node dist/bin/marvmem-agent.js install trae
 | Cursor | `~/.cursor/mcp.json` | `~/.cursor/rules/marvmem.mdc` | `~/Library/Application Support/Cursor/User` |
 | Copilot CLI | `~/.copilot/mcp-config.json` | `~/.copilot/copilot-instructions.md` | `~/Library/Application Support/Code/User` |
 | Antigravity | `~/.gemini/antigravity/mcp_config.json` | `~/.gemini/GEMINI.md` | `~/.gemini/antigravity/brain` |
-| WorkBuddy | `~/.workbuddy/mcp.json` | `~/.workbuddy/SOUL.md` / `USER.md` / `MEMORY.md` 映射 | n/a |
+| WorkBuddy | `~/.workbuddy/mcp.json` | `~/.workbuddy/SOUL.md` | `SOUL.md` / `USER.md` / `MEMORY.md` 映射 |
 | Trae Solo | `~/Library/Application Support/TRAE SOLO/User/mcp.json` | `~/.trae/skills/marvmem-memory/SKILL.md` | n/a |
 
-这个安装入口默认不会给 Codex、Claude Code、Cursor、Copilot、Antigravity、Trae Solo 的 MCP server 设置 `agent:*` scope。这样 agent 调 `memory_context` 的 `action: "recall"` 时如果不传 scope，就可以从同一个 SQLite 里跨 agent 召回；需要写入新记忆或做窄查询时，再按指令使用当前 agent 的 scope，例如 `agent:codex`、`agent:claude`、`agent:cursor`、`agent:copilot`、`agent:antigravity` 或 `agent:trae`。
+这个安装入口不会给 Codex、Claude Code、Cursor、Copilot、Antigravity、Trae Solo 的 MCP 配置硬编码 scope。server 会从 MCP `initialize.clientInfo.name` 推导默认写入 scope，例如 `agent:codex` 或 `agent:claude`；不传 scope 的 `memory_context recall` 仍从同一个 SQLite 跨 agent 召回。
 
-WorkBuddy 是例外：它没有 MarvMem 可以稳定写入的全局指令文件，所以 installer 会在 MCP env 里设置 `MARVMEM_SCOPE_TYPE=agent` 和 `MARVMEM_SCOPE_ID=workbuddy`，让写入类工具默认落到 `agent:workbuddy`，减少普通用户配置负担。同时它会把 `SOUL.md`、`USER.md`、`MEMORY.md` 作为数据库投影保留下来，避免打断 WorkBuddy 原本的文件读取习惯。
+WorkBuddy 是例外：installer 会把 MarvMem 使用规则写进 `SOUL.md`，并在 MCP env 里设置 `MARVMEM_SCOPE_TYPE=agent` 和 `MARVMEM_SCOPE_ID=workbuddy`，让写入类工具默认落到 `agent:workbuddy`，减少普通用户配置负担。同时它会把 `SOUL.md`、`USER.md`、`MEMORY.md` 作为数据库投影保留下来，避免打断 WorkBuddy 原本的文件读取习惯；`MEMORY.md` 只保留普通记忆投影。
 
 常用选项：
 
@@ -651,24 +655,25 @@ node dist/bin/marvmem-agent.js install copilot \
 | 命令 | 用途 |
 |------|------|
 | `marvmem-agent install <agent\|all>` | 写入 MCP 配置、导入历史 session、写入全局指令 |
-| `marvmem-agent update <agent\|all>` | 更新代码和依赖，然后重新执行安装入口 |
+| `marvmem-agent update [agent\|all]` | 更新代码和依赖，然后重新执行安装入口；省略 target 时默认更新全部 |
+| `marvmem-agent migrate` | 离线备份并压缩巨型 metadata、补齐软删除 schema、重建 FTS |
 | `marvmem-agent service <cmd>` | 安装、启动、停止、查询本地常驻控制台服务 |
 | `marvmem-agent serve` | LaunchAgent 使用的长跑 HTTP console 入口，并每 15 分钟增量导入本地 agent sessions |
 | `marvmem-agent ui` | 启动本地 Web 控制台 |
 | `marvmem-agent tui` | 启动终端控制台 |
 
-`install` 和 `update` 支持的 target：`codex`、`claude`、`cursor`、`copilot`、`antigravity`、`workbuddy`、`trae`、`all`。
+`install` 和 `update` 支持的 target：`codex`、`claude`、`cursor`、`copilot`、`antigravity`、`workbuddy`、`trae`、`all`。`update` 省略 target 时默认使用 `all`，会同时刷新本地常驻 service。
 
 `marvmem-agent` 的常用参数：
 
 | 参数 | 适用命令 | 作用 |
 |------|----------|------|
-| `--storage-path <path>` | `install` / `update` / `ui` / `tui` | 指定共享 SQLite 路径 |
+| `--storage-path <path>` | `install` / `update` / `migrate` / `ui` / `tui` | 指定共享 SQLite 路径 |
 | `--mcp-path <path>` | `install` / `update` / `ui` / `tui` | 指定写入 agent 配置的 `marvmem-mcp` 脚本路径 |
 | `--home <path>` | `install` / `update` / `ui` / `tui` | 指定 agent 配置所在的 home 目录，测试或迁移时有用 |
 | `--sessions-root <path>` | `install` / `update` 单 agent | 覆盖该 agent 的历史 session 目录 |
 | `--skip-mcp` | `install` / `update` | 不写 MCP 配置 |
-| `--skip-import` | `install` / `update` | 不导入历史 session |
+| `--skip-import` | `install` / `update` | 不导入历史 session；WorkBuddy 的三文件接管仍会执行 |
 | `--skip-instructions` | `install` / `update` | 不写全局指令 |
 | `--skip-service` | `install all` / `update all` | 不安装本地常驻 console 服务 |
 | `--no-service-start` | `install all` / `update all` | 写入 LaunchAgent 但不立刻启动 |
@@ -891,7 +896,16 @@ node dist/bin/marvmem-claude-import.js /path/to/sessions \
 
 重复导入同一个 session 时不会新建第二条 session memory。importer 会按已导入的 `messageCount` 只追加新增消息，然后更新同一个 task rolling summary 和 palace memory。几天后继续旧 session，也会落到同一个 `<agent>:<session-id>` 上。
 
-palace memory 的 metadata 会保留 `sessionId`、`sessionPath`、`cwd`、`timestamp`、`taskId`、`messageCount`、`lastImportedAt`、`lastMessageHash`、`resumeCount`，以及各 importer 能读到的 agent 原始标记。
+palace memory 的 metadata 只保留 `sessionId`、`sessionPath`、`cwd`、`timestamp`、`taskId`、`messageCount`、`lastImportedAt`、`lastMessageHash`、`resumeCount` 等必要标记，并限制在 8KB 内；完整 transcript 始终写入 `task_context_entries`。同一 session 会更新原记录，不同 session 不会因摘要相似而互相合并。
+
+如果旧库已经出现巨型 metadata，先停止所有连接该库的 MCP/常驻服务，再运行一次：
+
+```bash
+node dist/bin/marvmem-agent.js migrate \
+  --storage-path ~/.marvmem/memory.sqlite
+```
+
+命令会创建带时间戳的 SQLite 备份、压缩 metadata、重建 FTS，并输出备份路径。备份不会自动删除；超过 30 天后 health/console 会提醒确认清理。
 
 ## 13. 存储方式的选择
 
